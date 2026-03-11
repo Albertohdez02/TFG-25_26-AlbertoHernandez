@@ -59,12 +59,26 @@ set(SOLUTION_HEADERS
     src/solution/Solution.h
 )
 
+# Evaluator source files
+set(EVALUATOR_SOURCES
+    src/evaluator/Evaluator.cpp
+    src/evaluator/FeasibilityChecker.cpp
+)
+
+# Solver source files
+set(SOLVER_SOURCES
+    src/solver/LocalSearch.cpp
+    src/solver/RandomGenerator.cpp
+)
+
 # =============================================================================
 # Library Target
 # =============================================================================
 # Create static library with all core components
 add_library(ihtc_core STATIC
     ${SOLUTION_SOURCES}
+    ${EVALUATOR_SOURCES}
+    ${SOLVER_SOURCES}
 )
 
 # Include directories

@@ -1,32 +1,45 @@
-// main.cpp - Demo del solver IHTC
+// main.cpp - Solver IHTC 2024 con multi-start + ILS
 // TFG Alberto Hernandez - 4o Informatica
 //
-// Esto es un ejemplo de prueba para ver como funcionan las entidades
-// y la clase Solution. Creo una instancia pequena a mano y juego con ella.
+// Pipeline:
+//   1. Parsear instancia del JSON
+//   2. Multi-start: generar N soluciones, mejorar cada una con ILS
+//   3. Quedarse con la mejor solucion
+//   4. Evaluar y mostrar desglose final
+//   5. Exportar solucion a JSON
+//
+// Uso: ./ihtc_solver <fichero_instancia.json> [seed] [max_iter] [restarts]
+//   - seed: semilla para el generador aleatorio (default: 42)
+//   - max_iter: iteraciones maximas de busqueda local (default: 5000)
+//   - restarts: numero de reinicios multi-start (default: 10)
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <random>
 #include <string>
 
 #include "common/types.h"
-#include "entities/Nurse.h"
-#include "entities/Occupant.h"
-#include "entities/OperatingTheater.h"
-#include "entities/Patient.h"
 #include "entities/ProblemData.h"
-#include "entities/Room.h"
-#include "entities/Surgeon.h"
+#include "evaluator/Evaluator.h"
+#include "evaluator/FeasibilityChecker.h"
+#include "io/ProblemParser.h"
+#include "io/SolutionIO.h"
 #include "solution/Solution.h"
+#include "solver/LocalSearch.h"
+#include "solver/RandomGenerator.h"
 
-// Imprime una linea separadora bonita con titulo
+// Imprime una linea separadora
 void PrintSeparator(const std::string& title) {
   std::cout << "\n" << std::string(60, '=') << "\n";
   std::cout << "  " << title << "\n";
   std::cout << std::string(60, '=') << "\n";
 }
 
-// Imprime una tabla con la ocupacion de cada habitacion por dia
-// Pone un ! si se pasa de capacidad
+// Tabla de ocupacion de habitaciones
 void PrintRoomOccupancy(const Solution& sol, const ProblemData& problem) {
   std::cout << "\nOcupacion de habitaciones (Room x Day):\n";
   std::cout << std::setw(10) << "Room";
@@ -48,282 +61,206 @@ void PrintRoomOccupancy(const Solution& sol, const ProblemData& problem) {
   }
 }
 
-// Muestra la carga de cada quirofano por dia
-void PrintOTLoad(const Solution& sol, const ProblemData& problem) {
-  std::cout << "\nCarga de quirofanos (OT x Day):\n";
-  std::cout << std::setw(10) << "OT";
-  for (int d = 0; d < problem.GetNumDays(); ++d) {
-    std::cout << std::setw(8) << ("D" + std::to_string(d));
-  }
-  std::cout << "\n" << std::string(10 + 8 * problem.GetNumDays(), '-') << "\n";
+int main(int argc, char* argv[]) {
+  std::cout << "  IHTC 2024 Solver - Generacion Aleatoria + Busqueda Local\n\n";
 
-  for (OperatingTheaterId ot = 0; ot < problem.GetNumOperatingTheaters(); ++ot) {
-    std::cout << std::setw(10) << problem.GetOperatingTheater(ot).GetId();
-    for (Day d = 0; d < problem.GetNumDays(); ++d) {
-      int load = sol.GetOTLoad(ot, d);
-      int avail = problem.GetOperatingTheater(ot).GetAvailabilityForDay(d);
-      std::string cell = std::to_string(load) + "/" + std::to_string(avail);
-      if (load > avail) cell += "!";
-      std::cout << std::setw(8) << cell;
-    }
-    std::cout << "\n";
-  }
-}
-
-// Muestra cuanto tiempo ha operado cada cirujano por dia
-void PrintSurgeonLoad(const Solution& sol, const ProblemData& problem) {
-  std::cout << "\nCarga de cirujanos (Surgeon x Day):\n";
-  std::cout << std::setw(12) << "Surgeon";
-  for (int d = 0; d < problem.GetNumDays(); ++d) {
-    std::cout << std::setw(8) << ("D" + std::to_string(d));
-  }
-  std::cout << "\n" << std::string(12 + 8 * problem.GetNumDays(), '-') << "\n";
-
-  for (SurgeonId s = 0; s < problem.GetNumSurgeons(); ++s) {
-    std::cout << std::setw(12) << problem.GetSurgeon(s).GetId();
-    for (Day d = 0; d < problem.GetNumDays(); ++d) {
-      int load = sol.GetSurgeonLoad(s, d);
-      int max = problem.GetSurgeon(s).GetMaxSurgeryTimeForDay(d);
-      std::string cell = std::to_string(load) + "/" + std::to_string(max);
-      if (load > max) cell += "!";
-      std::cout << std::setw(8) << cell;
-    }
-    std::cout << "\n";
-  }
-}
-
-int main() {
-  std::cout << "  IHTC 2024 Solver - Demo de Entidades y Solucion " << std::endl << std::endl;
   // =========================================
-  // PASO 1: Crear la instancia de problema
+  // Parsear argumentos
   // =========================================
-  PrintSeparator("1. Creando instancia de problema de ejemplo");
+  std::string instance_file;
+  unsigned int seed = 42;
+  int max_iterations = 5000;
+  int num_restarts = 10;
+
+  if (argc < 2) {
+    std::cerr << "Uso: " << argv[0]
+              << " <instancia.json> [seed] [max_iter] [restarts]\n";
+    return 1;
+  }
+
+  instance_file = argv[1];
+  if (argc >= 3) seed = static_cast<unsigned int>(std::atoi(argv[2]));
+  if (argc >= 4) max_iterations = std::atoi(argv[3]);
+  if (argc >= 5) num_restarts = std::atoi(argv[4]);
+
+  std::mt19937 rng(seed);
+
+  // PASO 1: Cargar el problema
+  PrintSeparator("1. Cargando instancia desde JSON");
 
   ProblemData problem;
-  problem.SetFilename("demo_instance");
-  problem.SetNumDays(5);
-  problem.SetNumSkillLevels(3);
-  problem.SetNumShiftTypes(3);
-  problem.SetNumAgeGroups(3);
-  problem.SetShiftNames({"Early", "Late", "Night"});
+  try {
+    problem = ProblemParser::Parse(instance_file);
+    std::cout << "Instancia cargada: " << instance_file << "\n";
+  } catch (const std::exception& e) {
+    std::cerr << "Error al leer la instancia: " << e.what() << "\n";
+    return 1;
+  }
 
-  // Los pesos determinan cuanto penaliza cada violacion
-  Weights weights;
-  weights.room_gender_mix = 50;
-  weights.room_capacity_violation = 100;
-  weights.patient_delay = 10;
-  weights.unscheduled_optional = 200;
-  weights.surgeon_overtime = 20;
-  weights.operating_theater_overtime = 30;
-  problem.SetWeights(weights);
+  std::cout << "  Dias: " << problem.GetNumDays() << "\n";
+  std::cout << "  Habitaciones: " << problem.GetNumRooms() << "\n";
+  std::cout << "  Cirujanos: " << problem.GetNumSurgeons() << "\n";
+  std::cout << "  Quirofanos: " << problem.GetNumOperatingTheaters() << "\n";
+  std::cout << "  Enfermeras: " << problem.GetNumNurses() << "\n";
+  std::cout << "  Ocupantes: " << problem.GetNumOccupants() << "\n";
+  std::cout << "  Pacientes: " << problem.GetNumPatients()
+            << " (mand=" << problem.GetNumMandatoryPatients()
+            << ", opt=" << problem.GetNumOptionalPatients() << ")\n";
+  std::cout << "  Seed: " << seed << "\n";
+  std::cout << "  Max iteraciones LS: " << max_iterations << "\n";
+  std::cout << "  Reinicios multi-start: " << num_restarts << "\n";
 
-  // Habitaciones: R1 caben 2, R2 caben 3, R3 caben 2
-  problem.AddRoom(Room("R1", 0, 2));
-  problem.AddRoom(Room("R2", 1, 3));
-  problem.AddRoom(Room("R3", 2, 2));
 
-  // Cirujanos con su maximo de minutos por dia
-  problem.AddSurgeon(Surgeon("Dr_Garcia", 0, {120, 120, 120, 120, 120}));
-  problem.AddSurgeon(Surgeon("Dr_Lopez", 1, {90, 90, 90, 90, 90}));
+  // PASO 2: Multi-start (generar + ILS) x N
+  PrintSeparator("2. Multi-start: generacion + ILS");
 
-  // Quirofanos (OT2 cerrado el dia 2, por eso el 0)
-  problem.AddOperatingTheater(
-      OperatingTheater("OT1", 0, {180, 180, 180, 180, 180}));
-  problem.AddOperatingTheater(
-      OperatingTheater("OT2", 1, {120, 120, 0, 120, 120}));
+  auto t0 = std::chrono::steady_clock::now();
 
-  // Enfermeras con sus turnos (dia, turno, max carga)
-  std::vector<WorkingShift> nurse1_shifts = {
-      {0, 0, 10}, {0, 1, 10}, {1, 0, 10}, {1, 1, 10}, {2, 0, 10}};
-  std::vector<WorkingShift> nurse2_shifts = {
-      {0, 2, 8}, {1, 2, 8}, {2, 1, 8}, {2, 2, 8}, {3, 0, 8}};
-  problem.AddNurse(Nurse("Nurse_Ana", 0, 2, nurse1_shifts));
-  problem.AddNurse(Nurse("Nurse_Maria", 1, 3, nurse2_shifts));
+  Solution best_solution(problem);
+  int best_cost = std::numeric_limits<int>::max();
+  int total_improvements = 0;
 
-  // Ocupante = paciente que ya estaba cuando empieza la planificacion
-  problem.AddOccupant(Occupant("Occ1", 0, kGenderFemale, 1,
-                               3,
-                               {3, 2, 1},
-                               {1, 1, 1},
-                               0));
+  // Guardar costes iniciales y finales de cada restart para comparativa
+  std::vector<int> init_costs;
+  std::vector<int> final_costs;
+  std::vector<int> improvement_counts;
+  std::vector<double> times;
 
-  // Pacientes nuevos que hay que programar
-  // P1: obligatorio, lo opera Dr_Garcia, no puede ir a R3
-  problem.AddPatient(Patient("P1", 0, kGenderMale, 1,
-                             3,
-                             {4, 3, 2},
-                             {2, 1, 1},
-                             true,
-                             0, 2,
-                             45,
-                             0,
-                             {2}));
+  for (int restart = 0; restart < num_restarts; ++restart) {
+    Solution candidate = RandomGenerator::Generate(problem, rng);
+    int init_cost = Evaluator::Evaluate(candidate);
 
-  // P2: obligatorio, lo opera Dr_Lopez
-  problem.AddPatient(Patient("P2", 1, kGenderFemale, 2, 2,
-                             {3, 2, 1}, {1, 1, 1},
-                             true,
-                             0, 3,
-                             60,
-                             1,
-                             {}));
+    LocalSearchStats ls_stats =
+        LocalSearch::Run(candidate, max_iterations, rng);
+    total_improvements += ls_stats.improvements;
 
-  // P3: este es OPCIONAL (puede no programarse)
-  problem.AddPatient(Patient("P3", 2, kGenderMale, 0, 2, {2, 2, 1}, {1, 1, 1},
-                             false,
-                             1, 4,
-                             30,
-                             0,
-                             {}));
+    init_costs.push_back(init_cost);
+    final_costs.push_back(ls_stats.final_cost);
+    improvement_counts.push_back(ls_stats.improvements);
+    times.push_back(ls_stats.elapsed_seconds);
 
-  // P4: obligatorio, operacion larga
-  problem.AddPatient(Patient("P4", 3, kGenderFemale, 1, 4,
-                             {5, 4, 2}, {2, 2, 1},
-                             true,
-                             0, 1,
-                             75,
-                             0,
-                             {}));
-
-  std::cout << "Instancia creada:\n";
-  std::cout << "  - Dias de planificacion: " << problem.GetNumDays() << "\n";
-  std::cout << "  - Habitaciones: " << problem.GetNumRooms() << "\n";
-  std::cout << "  - Cirujanos: " << problem.GetNumSurgeons() << "\n";
-  std::cout << "  - Quirofanos: " << problem.GetNumOperatingTheaters() << "\n";
-  std::cout << "  - Enfermeras: " << problem.GetNumNurses() << "\n";
-  std::cout << "  - Ocupantes: " << problem.GetNumOccupants() << "\n";
-  std::cout << "  - Pacientes: " << problem.GetNumPatients() << "\n";
-  std::cout << "    - Obligatorios: " << problem.GetNumMandatoryPatients()
-            << "\n";
-  std::cout << "    - Opcionales: " << problem.GetNumOptionalPatients() << "\n";
-
-  // =========================================
-  // PASO 2: Crear solucion vacia
-  // =========================================
-  PrintSeparator("2. Creando solucion vacia");
-
-  Solution sol(problem);
-
-  std::cout << "Solucion inicial (solo ocupantes pre-existentes):\n";
-  std::cout << "  - Pacientes programados: " << sol.GetNumScheduledPatients()
-            << "\n";
-
-  PrintRoomOccupancy(sol, problem);
-
-  // =========================================
-  // PASO 3: Asignar pacientes
-  // =========================================
-  PrintSeparator("3. Asignando pacientes");
-
-  // Asigno P1 a R2, dia 0, quirofano OT1
-  bool ok = sol.AssignPatient(0, 1, 0, 0);
-  std::cout << "Asignando P1 (obligatorio) a R2, dia 0, OT1: "
-            << (ok ? "OK" : "FALLO") << "\n";
-
-  // Asigno P2 a R1, dia 1, quirofano OT1
-  ok = sol.AssignPatient(1, 0, 1, 0);
-  std::cout << "Asignando P2 (obligatorio) a R1, dia 1, OT1: "
-            << (ok ? "OK" : "FALLO") << "\n";
-
-  // Asigno P4 a R2, dia 0 (mismo dia que P1 en la misma habitacion)
-  ok = sol.AssignPatient(3, 1, 0, 0);
-  std::cout << "Asignando P4 (obligatorio) a R2, dia 0, OT1: "
-            << (ok ? "OK" : "FALLO") << "\n";
-
-  std::cout << "\n  Pacientes programados: " << sol.GetNumScheduledPatients()
-            << "/" << problem.GetNumPatients() << "\n";
-
-  // =========================================
-  // PASO 4: Ver el estado de los caches
-  // =========================================
-  PrintSeparator("4. Estado de la solucion (caches)");
-
-  PrintRoomOccupancy(sol, problem);
-  PrintOTLoad(sol, problem);
-  PrintSurgeonLoad(sol, problem);
-
-  // =========================================
-  // PASO 5: Probar a mover pacientes
-  // =========================================
-  PrintSeparator("5. Probando reassign y unassign");
-
-  std::cout << "Reasignando P1 de (R2, dia 0) a (R3, dia 1)...\n";
-  ok = sol.ReassignPatient(0, 2, 1, 1);
-  std::cout << "  Resultado: " << (ok ? "OK" : "FALLO") << "\n";
-
-  PrintRoomOccupancy(sol, problem);
-  PrintOTLoad(sol, problem);
-
-  std::cout << "\nDesasignando P4...\n";
-  ok = sol.UnassignPatient(3);
-  std::cout << "  Resultado: " << (ok ? "OK" : "FALLO") << "\n";
-  std::cout << "  Pacientes programados: " << sol.GetNumScheduledPatients()
-            << "\n";
-
-  PrintRoomOccupancy(sol, problem);
-
-  // =========================================
-  // PASO 6: Ver detalle de cada paciente
-  // =========================================
-  PrintSeparator("6. Detalle de asignaciones de pacientes");
-
-  std::cout << std::setw(8) << "Patient" << std::setw(10) << "Type"
-            << std::setw(10) << "Room" << std::setw(8) << "Day" << std::setw(8)
-            << "OT" << std::setw(10) << "Status"
-            << "\n";
-  std::cout << std::string(54, '-') << "\n";
-
-  for (PatientId p = 0; p < problem.GetNumPatients(); ++p) {
-    const Patient& pat = problem.GetPatient(p);
-    std::cout << std::setw(8) << pat.GetId();
-    std::cout << std::setw(10) << (pat.IsMandatory() ? "MAND" : "OPT");
-
-    if (sol.IsPatientScheduled(p)) {
-      RoomId r = sol.GetPatientRoom(p);
-      Day d = sol.GetPatientAdmissionDay(p);
-      OperatingTheaterId ot = sol.GetPatientOT(p);
-      std::cout << std::setw(10) << problem.GetRoom(r).GetId();
-      std::cout << std::setw(8) << d;
-      std::cout << std::setw(8) << problem.GetOperatingTheater(ot).GetId();
-      std::cout << std::setw(10) << "SCHED";
-    } else {
-      std::cout << std::setw(10) << "-";
-      std::cout << std::setw(8) << "-";
-      std::cout << std::setw(8) << "-";
-      std::cout << std::setw(10) << "UNSCHED";
+    if (ls_stats.final_cost < best_cost) {
+      best_cost = ls_stats.final_cost;
+      best_solution = std::move(candidate);
     }
-    std::cout << "\n";
+
+    std::cout << "  Restart " << (restart + 1) << "/" << num_restarts
+              << ": init=" << init_cost << " -> final=" << ls_stats.final_cost
+              << " (" << ls_stats.improvements << " mejoras, "
+              << std::fixed << std::setprecision(2)
+              << ls_stats.elapsed_seconds << "s)\n";
   }
 
-  // =========================================
-  // PASO 7: Ver generos por habitacion
-  // =========================================
-  PrintSeparator("7. Genero por habitacion-dia");
+  auto t1 = std::chrono::steady_clock::now();
+  double total_time = std::chrono::duration<double>(t1 - t0).count();
 
-  // Lambda para convertir genero a string
-  auto gender_str = [](Gender g) -> std::string {
-    if (g == kGenderAny) return "ANY";
-    if (g == kGenderFemale) return "F";
-    if (g == kGenderMale) return "M";
-    return "MIX!";
-  };
+  std::cout << "\n  Mejor coste encontrado: " << best_cost << "\n";
+  std::cout << "  Mejoras totales: " << total_improvements << "\n";
+  std::cout << "  Tiempo total: " << std::fixed << std::setprecision(3)
+            << total_time << " s\n";
 
-  std::cout << std::setw(10) << "Room";
-  for (int d = 0; d < problem.GetNumDays(); ++d) {
-    std::cout << std::setw(6) << ("D" + std::to_string(d));
+  // Comparativa: coste inicial vs final
+  PrintSeparator("Comparativa greedy vs ILS");
+
+  std::cout << std::setw(10) << "Restart"
+            << std::setw(12) << "Inicial"
+            << std::setw(12) << "Final"
+            << std::setw(12) << "Reduccion"
+            << std::setw(10) << "Mejora%"
+            << std::setw(10) << "Mejoras"
+            << std::setw(10) << "Tiempo"
+            << "\n";
+  std::cout << std::string(76, '-') << "\n";
+
+  int sum_init = 0, sum_final = 0;
+  for (int i = 0; i < num_restarts; ++i) {
+    int reduccion = init_costs[i] - final_costs[i];
+    double pct = init_costs[i] > 0
+        ? 100.0 * reduccion / init_costs[i]
+        : 0.0;
+    sum_init += init_costs[i];
+    sum_final += final_costs[i];
+
+    std::cout << std::setw(10) << (i + 1)
+              << std::setw(12) << init_costs[i]
+              << std::setw(12) << final_costs[i]
+              << std::setw(12) << reduccion
+              << std::setw(9) << std::fixed << std::setprecision(1) << pct << "%"
+              << std::setw(10) << improvement_counts[i]
+              << std::setw(9) << std::fixed << std::setprecision(2) << times[i] << "s"
+              << "\n";
   }
-  std::cout << "\n" << std::string(10 + 6 * problem.GetNumDays(), '-') << "\n";
 
-  for (RoomId r = 0; r < problem.GetNumRooms(); ++r) {
-    std::cout << std::setw(10) << problem.GetRoom(r).GetId();
-    for (Day d = 0; d < problem.GetNumDays(); ++d) {
-      std::cout << std::setw(6) << gender_str(sol.GetRoomGender(r, d));
-    }
-    std::cout << "\n";
+  std::cout << std::string(76, '-') << "\n";
+  double avg_init = static_cast<double>(sum_init) / num_restarts;
+  double avg_final = static_cast<double>(sum_final) / num_restarts;
+  double avg_pct = avg_init > 0 ? 100.0 * (avg_init - avg_final) / avg_init : 0.0;
+  std::cout << std::setw(10) << "Media"
+            << std::setw(12) << std::fixed << std::setprecision(0) << avg_init
+            << std::setw(12) << std::fixed << std::setprecision(0) << avg_final
+            << std::setw(12) << std::fixed << std::setprecision(0) << (avg_init - avg_final)
+            << std::setw(9) << std::fixed << std::setprecision(1) << avg_pct << "%"
+            << "\n";
+
+  int best_init = *std::min_element(init_costs.begin(), init_costs.end());
+  double pct_vs_best_init = best_init > 0
+      ? 100.0 * (best_init - best_cost) / best_init
+      : 0.0;
+  std::cout << "\n  Mejor coste inicial (greedy):  " << best_init << "\n";
+  std::cout << "  Mejor coste final (ILS):       " << best_cost << "\n";
+  std::cout << "  Mejora absoluta:               " << (best_init - best_cost) << "\n";
+  std::cout << "  Mejora relativa:               " << std::fixed << std::setprecision(1)
+            << pct_vs_best_init << "%\n";
+
+
+  // PASO 3: Evaluar mejor solucion
+  PrintSeparator("3. Evaluacion de la mejor solucion");
+
+  FeasibilityResult feas = FeasibilityChecker::Check(best_solution);
+  std::cout << feas.ToString();
+
+  CostBreakdown breakdown = Evaluator::EvaluateDetailed(best_solution);
+  std::cout << breakdown.ToString();
+
+  SolutionIO::PrintSummary(best_solution);
+
+  if (problem.GetNumRooms() <= 10 && problem.GetNumDays() <= 10) {
+    PrintRoomOccupancy(best_solution, problem);
   }
+
+
+  // PASO 4: Exportar solucion
+  PrintSeparator("4. Exportando solucion");
+
+  // nombre de salida basado en la instancia
+  size_t last_slash = instance_file.find_last_of('/');
+  size_t last_dot = instance_file.find_last_of('.');
+  std::string basename = instance_file.substr(
+      last_slash == std::string::npos ? 0 : last_slash + 1,
+      last_dot == std::string::npos
+          ? std::string::npos
+          : last_dot -
+                (last_slash == std::string::npos ? 0 : last_slash + 1));
+  std::string output_file = "solutions/" + basename + "_solution.json";
+
+  if (SolutionIO::ExportJSON(best_solution, output_file)) {
+    std::cout << "Solucion exportada a: " << output_file << "\n";
+  } else {
+    std::cerr << "Error al exportar la solucion\n";
+  }
+
+
+  // Resumen final
+  PrintSeparator("Resumen final");
+
+  std::cout << "Coste final (mejor de " << num_restarts
+            << " reinicios): " << best_cost << "\n";
+  std::cout << "Mejoras totales LS:        " << total_improvements << "\n";
+  std::cout << "Tiempo total:              " << std::fixed
+            << std::setprecision(3) << total_time << " s\n";
 
   std::cout << "\n" << std::string(60, '=') << "\n";
-  std::cout << "  Demo completada exitosamente!\n";
+  std::cout << "  Ejecucion completada!\n";
   std::cout << std::string(60, '=') << "\n\n";
 
   return 0;
