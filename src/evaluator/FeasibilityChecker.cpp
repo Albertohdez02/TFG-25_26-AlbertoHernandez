@@ -76,7 +76,6 @@ FeasibilityResult FeasibilityChecker::Check(const Solution& solution) {
   CheckRoomCompatibility(solution, prob, result);
   CheckOTOpen(solution, prob, result);
   CheckNurseAvailability(solution, prob, result);
-  CheckNurseOneRoom(solution, prob, result);
   CheckSurgeonOvertime(solution, prob, result);
   CheckOTOvertime(solution, prob, result);
 
@@ -168,16 +167,12 @@ bool FeasibilityChecker::IsFeasibleNurseAssignment(
     Shift shift) {
   const ProblemData& prob = solution.GetProblem();
 
+  // HC9: una habitacion tiene como maximo una enfermera por (dia, turno)
+  NurseId assigned = solution.GetNurseAssignment(room_id, day, shift);
+  if (assigned != kInvalidId && assigned != nurse_id) return false;
+
   // HC10: enfermera disponible
   if (!prob.GetNurse(nurse_id).IsAvailable(day, shift)) return false;
-
-  // HC11: enfermera no asignada a otra habitacion en este (day, shift)
-  for (RoomId r = 0; r < prob.GetNumRooms(); ++r) {
-    if (r == room_id) continue;
-    if (solution.GetNurseAssignment(r, day, shift) == nurse_id) {
-      return false;
-    }
-  }
 
   return true;
 }
@@ -321,40 +316,6 @@ void FeasibilityChecker::CheckNurseAvailability(const Solution& sol,
                     prob.GetRoom(r).GetId() + " dia " + std::to_string(d) +
                     " turno " + std::to_string(s) + " (no disponible)");
           }
-        }
-      }
-    }
-  }
-}
-
-// HC11: enfermera en maximo 1 habitacion por (dia, turno)
-void FeasibilityChecker::CheckNurseOneRoom(const Solution& sol,
-                                           const ProblemData& prob,
-                                           FeasibilityResult& result) {
-  int num_shifts = prob.GetNumShiftTypes();
-  int num_rooms = prob.GetNumRooms();
-
-  for (Day d = 0; d < prob.GetNumDays(); ++d) {
-    for (Shift s = 0; s < num_shifts; ++s) {
-      std::unordered_map<NurseId, std::vector<RoomId>> nurse_rooms;
-      for (RoomId r = 0; r < num_rooms; ++r) {
-        NurseId nurse = sol.GetNurseAssignment(r, d, s);
-        if (nurse != kInvalidId) {
-          nurse_rooms[nurse].push_back(r);
-        }
-      }
-      for (const auto& [nurse_id, rooms] : nurse_rooms) {
-        if (static_cast<int>(rooms.size()) > 1) {
-          std::string rooms_str;
-          for (RoomId r : rooms) {
-            if (!rooms_str.empty()) rooms_str += ", ";
-            rooms_str += prob.GetRoom(r).GetId();
-          }
-          result.AddViolation(
-              "HC11", prob.GetNurse(nurse_id).GetId() + " dia " +
-                          std::to_string(d) + " turno " + std::to_string(s) +
-                          " en " + std::to_string(rooms.size()) +
-                          " habitaciones: " + rooms_str);
         }
       }
     }

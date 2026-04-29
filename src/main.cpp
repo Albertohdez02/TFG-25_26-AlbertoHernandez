@@ -70,18 +70,20 @@ int main(int argc, char* argv[]) {
   std::string instance_file;
   unsigned int seed = 42;
   int max_iterations = 5000;
-  int num_restarts = 10;
+  int num_restarts = 100;          // alto: el tiempo global lo detiene antes
+  double global_time_s = 600.0;   // 10 min (requisito de competicion)
 
   if (argc < 2) {
     std::cerr << "Uso: " << argv[0]
-              << " <instancia.json> [seed] [max_iter] [restarts]\n";
+              << " <instancia.json> [seed] [max_iter] [restarts] [time_s]\n";
     return 1;
   }
 
   instance_file = argv[1];
   if (argc >= 3) seed = static_cast<unsigned int>(std::atoi(argv[2]));
   if (argc >= 4) max_iterations = std::atoi(argv[3]);
-  if (argc >= 5) num_restarts = std::atoi(argv[4]);
+  if (argc >= 5) num_restarts  = std::atoi(argv[4]);
+  if (argc >= 6) global_time_s = std::atof(argv[5]);
 
   std::mt19937 rng(seed);
 
@@ -109,12 +111,19 @@ int main(int argc, char* argv[]) {
   std::cout << "  Seed: " << seed << "\n";
   std::cout << "  Max iteraciones LS: " << max_iterations << "\n";
   std::cout << "  Reinicios multi-start: " << num_restarts << "\n";
+  std::cout << "  Tiempo global maximo: " << global_time_s << " s\n";
 
 
-  // PASO 2: Multi-start (generar + ILS) x N
+  // PASO 2: Multi-start (generar + ILS) x N (limitado por tiempo global)
   PrintSeparator("2. Multi-start: generacion + ILS");
 
   auto t0 = std::chrono::steady_clock::now();
+
+  auto elapsed_s = [&]() {
+    return std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - t0).count();
+  };
+  auto remaining_s = [&]() { return global_time_s - elapsed_s(); };
 
   Solution best_solution(problem);
   int best_cost = std::numeric_limits<int>::max();
@@ -126,12 +135,16 @@ int main(int argc, char* argv[]) {
   std::vector<int> improvement_counts;
   std::vector<double> times;
 
-  for (int restart = 0; restart < num_restarts; ++restart) {
+  for (int restart = 0; restart < num_restarts && remaining_s() > 2.0; ++restart) {
+    // Reparte el tiempo restante equitativamente entre los reinicios que quedan
+    int restarts_left = num_restarts - restart;
+    double time_for_restart = remaining_s() / restarts_left;
+
     Solution candidate = RandomGenerator::Generate(problem, rng);
     int init_cost = Evaluator::Evaluate(candidate);
 
     LocalSearchStats ls_stats =
-        LocalSearch::Run(candidate, max_iterations, rng);
+        LocalSearch::Run(candidate, max_iterations, rng, time_for_restart);
     total_improvements += ls_stats.improvements;
 
     init_costs.push_back(init_cost);
@@ -139,7 +152,8 @@ int main(int argc, char* argv[]) {
     improvement_counts.push_back(ls_stats.improvements);
     times.push_back(ls_stats.elapsed_seconds);
 
-    if (ls_stats.final_cost < best_cost) {
+    if (ls_stats.final_cost < best_cost &&
+        FeasibilityChecker::Check(candidate).feasible) {
       best_cost = ls_stats.final_cost;
       best_solution = std::move(candidate);
     }

@@ -36,6 +36,15 @@ std::string LocalSearchStats::ToString() const {
               : 0.0)
       << "%)\n";
   oss << "  Tiempo:        " << elapsed_seconds << " s\n";
+  oss << "  Mejoras por operador:\n";
+  for (int i = 0; i < 8; ++i) {
+    if (op_improvements[i] > 0) {
+      double pct = improvements > 0
+          ? 100.0 * op_improvements[i] / improvements : 0.0;
+      oss << "    " << kOperatorNames[i] << ": " << op_improvements[i]
+          << " (" << pct << "%)\n";
+    }
+  }
   return oss.str();
 }
 
@@ -45,7 +54,8 @@ std::string LocalSearchStats::ToString() const {
 
 LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
                                   std::mt19937& rng,
-                                  double time_limit_seconds) {
+                                  double time_limit_seconds,
+                                  uint8_t enabled_mask) {
   LocalSearchStats stats;
   auto start_time = std::chrono::steady_clock::now();
 
@@ -56,13 +66,21 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
   Solution best_solution = solution;
   int best_cost = current_cost;
 
-  // 8 vecindarios
+  // 8 vecindarios en orden fijo; se filtran por enabled_mask
   using MoveFunc = std::function<bool(Solution&, int&, std::mt19937&)>;
-  std::vector<MoveFunc> neighborhoods = {
+  const std::array<MoveFunc, 8> all_ops = {
       TryChangeRoom,  TryChangeDay,      TryChangeOT,      TryRelocate,
       TrySwapRooms,   TrySwapDays,       TryToggleOptional, TryChangeNurse};
 
-  std::vector<int> order(neighborhoods.size());
+  // active[k] = {indice_global, funcion} para los operadores activos
+  std::vector<std::pair<int, MoveFunc>> active;
+  for (int i = 0; i < 8; ++i) {
+    if (enabled_mask & static_cast<uint8_t>(1 << i)) {
+      active.push_back({i, all_ops[i]});
+    }
+  }
+
+  std::vector<int> order(active.size());
   std::iota(order.begin(), order.end(), 0);
 
   constexpr int kMaxPerturbations = 15;
@@ -88,8 +106,10 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
 
       std::shuffle(order.begin(), order.end(), rng);
 
-      for (int idx : order) {
-        if (neighborhoods[idx](solution, current_cost, rng)) {
+      for (int local_idx : order) {
+        auto& [global_idx, op] = active[local_idx];
+        if (op(solution, current_cost, rng)) {
+          stats.op_improvements[global_idx]++;
           stats.improvements++;
           ls_improved = true;
           break;  // first-improvement

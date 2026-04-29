@@ -10,8 +10,10 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 
 #include "../common/types.h"
 #include "../entities/ProblemData.h"
@@ -58,36 +60,57 @@ class SolutionIO {
         patient_entry["operating_theater"] =
             prob.GetOperatingTheater(ot).GetId();
       } else {
-        patient_entry["admission_day"] = nullptr;
-        patient_entry["room"] = nullptr;
-        patient_entry["operating_theater"] = nullptr;
+        patient_entry["admission_day"] = "none";
       }
 
       patients_json.push_back(patient_entry);
     }
     j["patients"] = patients_json;
 
-    // asignaciones de enfermeras
-    json nurses_json = json::array();
+    // asignaciones de enfermeras agrupadas por enfermera
+    // formato: [{id, assignments: [{day, shift, rooms: [...]}]}]
     int num_shifts = prob.GetNumShiftTypes();
     const auto& shift_names = prob.GetShiftNames();
+
+    // recopilar: nurse_id -> (day, shift) -> lista de rooms
+    // usamos map para ordenar de forma determinista
+    std::map<NurseId, std::map<std::pair<Day,Shift>, std::vector<RoomId>>> nurse_map;
 
     for (RoomId r = 0; r < prob.GetNumRooms(); ++r) {
       for (Day d = 0; d < prob.GetNumDays(); ++d) {
         for (Shift s = 0; s < num_shifts; ++s) {
           NurseId nurse = solution.GetNurseAssignment(r, d, s);
           if (nurse != kInvalidId) {
-            json entry;
-            entry["room"] = prob.GetRoom(r).GetId();
-            entry["day"] = d;
-            entry["shift"] = (s < static_cast<int>(shift_names.size()))
-                                 ? shift_names[s]
-                                 : std::to_string(s);
-            entry["nurse"] = prob.GetNurse(nurse).GetId();
-            nurses_json.push_back(entry);
+            nurse_map[nurse][{d, s}].push_back(r);
           }
         }
       }
+    }
+
+    json nurses_json = json::array();
+    for (const auto& [nurse_id, day_shift_rooms] : nurse_map) {
+      json nurse_entry;
+      nurse_entry["id"] = prob.GetNurse(nurse_id).GetId();
+
+      json assignments = json::array();
+      for (const auto& [day_shift, rooms] : day_shift_rooms) {
+        Day d = day_shift.first;
+        Shift s = day_shift.second;
+
+        json assignment;
+        assignment["day"] = d;
+        assignment["shift"] = (s < static_cast<int>(shift_names.size()))
+                                  ? shift_names[s]
+                                  : std::to_string(s);
+        json rooms_json = json::array();
+        for (RoomId r : rooms) {
+          rooms_json.push_back(prob.GetRoom(r).GetId());
+        }
+        assignment["rooms"] = rooms_json;
+        assignments.push_back(assignment);
+      }
+      nurse_entry["assignments"] = assignments;
+      nurses_json.push_back(nurse_entry);
     }
     j["nurses"] = nurses_json;
 

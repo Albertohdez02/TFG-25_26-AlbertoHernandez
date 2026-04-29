@@ -18,12 +18,19 @@
 #ifndef SRC_SOLVER_LOCAL_SEARCH_H_
 #define SRC_SOLVER_LOCAL_SEARCH_H_
 
+#include <array>
+#include <cstdint>
 #include <random>
 #include <string>
 
 #include "../entities/ProblemData.h"
 #include "../evaluator/Evaluator.h"
 #include "../solution/Solution.h"
+
+// Nombres de los 8 vecindarios (mismo orden que el vector interno de Run)
+static constexpr std::array<const char*, 8> kOperatorNames = {
+    "ChangeRoom", "ChangeDay",  "ChangeOT",   "Relocate",
+    "SwapRooms",  "SwapDays",   "ToggleOpt",  "ChangeNurse"};
 
 // Estadisticas de la busqueda local
 struct LocalSearchStats {
@@ -32,6 +39,8 @@ struct LocalSearchStats {
   int initial_cost = 0;
   int final_cost = 0;
   double elapsed_seconds = 0.0;
+  // Mejoras producidas por cada operador (mismo orden que kOperatorNames)
+  std::array<int, 8> op_improvements = {};
 
   [[nodiscard]] std::string ToString() const;
 };
@@ -39,9 +48,12 @@ struct LocalSearchStats {
 class LocalSearch {
  public:
   // ejecuta busqueda local ILS sobre la solucion (con time limit en segundos)
+  // enabled_mask: bitmask de 8 bits; bit i = 1 activa el operador i.
+  //   0xFF = todos activos (comportamiento por defecto)
   static LocalSearchStats Run(Solution& solution, int max_iterations,
                               std::mt19937& rng,
-                              double time_limit_seconds = 30.0);
+                              double time_limit_seconds = 30.0,
+                              uint8_t enabled_mask = 0xFF);
 
  private:
   // vecindarios exhaustivos (iteran todos los pacientes, first-improvement)

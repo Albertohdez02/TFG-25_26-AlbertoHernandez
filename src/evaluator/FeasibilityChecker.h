@@ -15,7 +15,7 @@
 //   HC8: Quirofano abierto el dia de cirugia (availability > 0)
 //   HC9: Maximo una enfermera por (habitacion, dia, turno) [implicito en Solution]
 //   HC10: Enfermera disponible en el (dia, turno) asignado
-//   HC11: Enfermera asignada a como maximo 1 habitacion por (dia, turno)
+//   HC11: (desactivada en esta rama) una enfermera puede cubrir varias habitaciones
 //   HC12: Carga cirujano <= max_surgery_time en cada dia
 //   HC13: Carga quirofano <= availability en cada dia
 
@@ -91,8 +91,6 @@ class FeasibilityChecker {
   static void CheckNurseAvailability(const Solution& sol,
                                      const ProblemData& prob,
                                      FeasibilityResult& result);
-  static void CheckNurseOneRoom(const Solution& sol, const ProblemData& prob,
-                                FeasibilityResult& result);
   static void CheckSurgeonOvertime(const Solution& sol, const ProblemData& prob,
                                    FeasibilityResult& result);
   static void CheckOTOvertime(const Solution& sol, const ProblemData& prob,

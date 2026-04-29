@@ -46,6 +46,9 @@ lib/
 *.d
 
 .github/
+.claude/
+ablation_results/
+logs/
 
 ihtc_demo
 test_parser
