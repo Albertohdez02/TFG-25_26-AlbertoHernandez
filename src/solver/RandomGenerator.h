@@ -38,20 +38,20 @@ class RandomGenerator {
                                        const ProblemData& problem,
                                        std::mt19937& rng);
 
- private:
-  // intenta asignar un paciente en un dia concreto, probando rooms y OTs
-  static bool TryAssignOnDay(Solution& solution, Day day, PatientId pid,
-                             const ProblemData& problem, std::mt19937& rng);
-
-  // intenta asignar un paciente probando todos los dias de su ventana
+  // intenta asignar un paciente probando todos los dias de su ventana (sin forzar)
   static bool TryAssignPatientFeasibly(Solution& solution, PatientId pid,
                                        const ProblemData& problem,
                                        std::mt19937& rng);
 
-  // fuerza la asignacion de un obligatorio desalojando bloqueantes
+  // fuerza la asignacion de un obligatorio desalojando bloqueantes si hace falta
   static bool ForceAssignMandatory(Solution& solution, PatientId pid,
                                     const ProblemData& problem,
                                     std::mt19937& rng);
+
+ private:
+  // intenta asignar un paciente en un dia concreto, probando rooms y OTs
+  static bool TryAssignOnDay(Solution& solution, Day day, PatientId pid,
+                             const ProblemData& problem, std::mt19937& rng);
 
   // generadores de candidatos validos
   static std::vector<Day> GetFeasibleDays(const Patient& patient,

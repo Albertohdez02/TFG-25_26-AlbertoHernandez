@@ -69,6 +69,7 @@ set(EVALUATOR_SOURCES
 set(SOLVER_SOURCES
     src/solver/LocalSearch.cpp
     src/solver/RandomGenerator.cpp
+    src/solver/ACOSolver.cpp
 )
 
 # =============================================================================
