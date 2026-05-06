@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../evaluator/FeasibilityChecker.h"
+#include "RandomGenerator.h"
 
 // ============================================================================
 // Estadisticas
@@ -58,6 +59,13 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
                                   uint8_t enabled_mask) {
   LocalSearchStats stats;
   auto start_time = std::chrono::steady_clock::now();
+  const ProblemData& prob = solution.GetProblem();
+
+  // Cobertura de enfermeras inicial: la solucion entrante puede tener celdas
+  // (room, day) sin enfermera tras una construccion ACO o un Perturb previo.
+  // Sin esto, el coste evaluado por LS oculta el coste de las celdas
+  // descubiertas y produce decisiones engañosas.
+  RandomGenerator::EnsureFullNurseCoverage(solution, prob, rng);
 
   int current_cost = Evaluator::Evaluate(solution);
   stats.initial_cost = current_cost;
@@ -109,6 +117,13 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
       for (int local_idx : order) {
         auto& [global_idx, op] = active[local_idx];
         if (op(solution, current_cost, rng)) {
+          // Tras aceptar un movimiento de paciente, la nueva celda
+          // (room, day) puede haber quedado sin enfermera. Rellenamos solo
+          // donde falta y reevaluamos para no maquillar el coste.
+          if (global_idx != 7) {  // ChangeNurse no necesita refresh
+            RandomGenerator::EnsureFullNurseCoverage(solution, prob, rng);
+            current_cost = Evaluator::Evaluate(solution);
+          }
           stats.op_improvements[global_idx]++;
           stats.improvements++;
           ls_improved = true;
@@ -132,10 +147,12 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
     solution = best_solution;
     current_cost = best_cost;
     Perturb(solution, kPerturbStrength, rng);
+    // Perturb mueve pacientes y puede dejar celdas sin enfermera
+    RandomGenerator::EnsureFullNurseCoverage(solution, prob, rng);
     current_cost = Evaluator::Evaluate(solution);
   }
 
-  // restaurar la mejor solucion
+  // restaurar la mejor solucion (ya tiene cobertura completa por construccion)
   solution = best_solution;
 
   stats.final_cost = best_cost;

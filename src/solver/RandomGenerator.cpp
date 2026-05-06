@@ -190,6 +190,92 @@ void RandomGenerator::GenerateNurseAssignments(Solution& solution,
 }
 
 
+// Asigna enfermeras solo donde falta cobertura (idempotente)
+
+/** @brief Garantiza que toda (room, day, shift) con pacientes u ocupantes
+ *         tiene una enfermera. Si ya hay una, la deja intacta. Solo rellena
+ *         las celdas vacias.
+ *  Reutiliza la misma puntuacion que GenerateNurseAssignments para mantener
+ *  consistencia (penaliza skill insuficiente y sobrecarga, bonifica
+ *  continuidad con el dia anterior).
+ */
+void RandomGenerator::EnsureFullNurseCoverage(Solution& solution,
+                                              const ProblemData& problem,
+                                              std::mt19937& rng) {
+  int num_shifts = problem.GetNumShiftTypes();
+
+  for (RoomId r = 0; r < problem.GetNumRooms(); ++r) {
+    for (Day d = 0; d < problem.GetNumDays(); ++d) {
+      // sin pacientes ni ocupantes: nada que cubrir
+      if (solution.GetRoomOccupancy(r, d) == 0) continue;
+
+      for (Shift s = 0; s < num_shifts; ++s) {
+        // ya hay enfermera, no tocar
+        if (solution.GetNurseAssignment(r, d, s) != kInvalidId) continue;
+
+        std::vector<NurseId> candidates;
+        for (NurseId n = 0; n < problem.GetNumNurses(); ++n) {
+          if (FeasibilityChecker::IsFeasibleNurseAssignment(solution, n, r, d,
+                                                            s)) {
+            candidates.push_back(n);
+          }
+        }
+        if (candidates.empty()) continue;  // no hay nurses trabajando ese turno
+
+        NurseId prev_nurse = kInvalidId;
+        if (d > 0) prev_nurse = solution.GetNurseAssignment(r, d - 1, s);
+
+        const auto& room_patients = solution.GetRoomPatients(r, d);
+
+        NurseId best_nurse = candidates[0];
+        int best_score = std::numeric_limits<int>::max();
+
+        for (NurseId n : candidates) {
+          int score = 0;
+          SkillLevel nurse_skill = problem.GetNurse(n).GetSkillLevel();
+
+          for (PatientId pid : room_patients) {
+            SkillLevel req = problem.GetPatient(pid).GetSkillLevelForShift(s);
+            if (nurse_skill < req) score += 100;
+          }
+          for (const auto& occ : problem.GetOccupants()) {
+            if (occ.GetRoomId() == r && occ.IsPresentOnDay(d)) {
+              SkillLevel req = occ.GetSkillLevelForShift(s);
+              if (nurse_skill < req) score += 100;
+            }
+          }
+
+          int max_load = problem.GetNurse(n).GetMaxWorkload(d, s);
+          int current_workload = solution.GetNurseWorkload(n, d, s);
+          int added_workload = 0;
+          for (PatientId pid : room_patients) {
+            added_workload += problem.GetPatient(pid).GetWorkloadForShift(s);
+          }
+          for (const auto& occ : problem.GetOccupants()) {
+            if (occ.GetRoomId() == r && occ.IsPresentOnDay(d)) {
+              added_workload += occ.GetWorkloadForShift(s);
+            }
+          }
+          if (current_workload + added_workload > max_load) {
+            score += (current_workload + added_workload - max_load) * 10;
+          }
+
+          if (n == prev_nurse && prev_nurse != kInvalidId) score -= 50;
+
+          if (score < best_score) {
+            best_score = score;
+            best_nurse = n;
+          }
+        }
+
+        solution.AssignNurse(best_nurse, r, d, s);
+      }
+    }
+  }
+  (void)rng;  // determinista: el mejor score gana, sin desempate aleatorio
+}
+
+
 // Intenta asignar un paciente en un dia concreto
 
 /** @brief Intenta asignar un paciente en un día concreto.

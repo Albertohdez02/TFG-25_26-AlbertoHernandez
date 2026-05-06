@@ -18,6 +18,8 @@
 //   HC11: (desactivada en esta rama) una enfermera puede cubrir varias habitaciones
 //   HC12: Carga cirujano <= max_surgery_time en cada dia
 //   HC13: Carga quirofano <= availability en cada dia
+//   HC14: Toda (habitacion, dia, turno) con pacientes/ocupantes tiene enfermera
+//         (analogo a UncoveredRoom del validador oficial IHTC)
 
 #ifndef SRC_EVALUATOR_FEASIBILITY_CHECKER_H_
 #define SRC_EVALUATOR_FEASIBILITY_CHECKER_H_
@@ -95,6 +97,8 @@ class FeasibilityChecker {
                                    FeasibilityResult& result);
   static void CheckOTOvertime(const Solution& sol, const ProblemData& prob,
                               FeasibilityResult& result);
+  static void CheckRoomCoverage(const Solution& sol, const ProblemData& prob,
+                                FeasibilityResult& result);
 };
 
 #endif  // SRC_EVALUATOR_FEASIBILITY_CHECKER_H_

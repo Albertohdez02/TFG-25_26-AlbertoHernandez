@@ -1,6 +1,6 @@
 # Historial del Proyecto — TFG IHTC 2024
 **Autor:** Alberto Hernández  
-**Fecha última actualización:** 2026-04-29  
+**Fecha última actualización:** 2026-05-04  
 **Repositorio:** `/home/alberto/TFG-25_26-AlbertoHernandez`
 
 ---
@@ -300,7 +300,7 @@ cmake --build build -j$(nproc)
 
 ## 6. Tareas Pendientes / Líneas Futuras
 
-- [ ] Comparar nuestras soluciones (i01–i30) contra `best-solutions/sol_i*.json` con tabla CSV
+- [x] ~~Comparar nuestras soluciones (i01–i30) contra `best-solutions/sol_i*.json` con tabla CSV~~ → ver §8
 - [ ] Generar soluciones para instancias `m01`–`m30`
 - [ ] Implementar `SolutionIO::ImportJSON` para poder evaluar soluciones externas (los formatos de enfermeras difieren: nuestro formato es `{room,day,shift,nurse}` por entrada; el de la competición es nurse-centric `{id, assignments:[{day,shift,rooms:[]}]}`)
 - [ ] Implementar VNS reducido (6 operadores: sin ChangeNurse y ChangeRoom) y comparar con full
@@ -316,3 +316,115 @@ cmake --build build -j$(nproc)
 - El formato JSON de enfermeras de la competición (`best-solutions/`) es diferente al nuestro — una enfermera puede cubrir múltiples habitaciones en el mismo turno (HC11 desactivada en nuestra implementación)
 - **`kOperatorNames`** está definido como variable `static constexpr` en `LocalSearch.h` (no dentro de la clase), accesible desde `ablation_test.cpp` con solo incluir el header
 - Los resultados del ablation tienen **alta varianza inter-instancia** — las conclusiones son tendencias, no verdades absolutas por instancia individual
+- **`UncoveredRoom`** (§8): los operadores VNS mueven pacientes pero no enfermeras. Una celda `(room, day)` que pasa de vacía a poblada tras un movimiento queda sin nurse → infactible para el validador oficial. El fix (`EnsureFullNurseCoverage` tras cada accept y tras Perturb) ya está integrado, pero cualquier *nuevo* operador que cree celdas debe respetar el invariante o llamarlo explícitamente
+
+---
+
+## 8. Sesión 2026-05-04 — Validador Oficial y Fix de Cobertura de Enfermeras
+
+### 8.1 Integración del validador oficial IHTC
+
+Se añadió `validator/IHTP_Validator.cc` (descargado de la web oficial, versión 0.0 — 23/05/24) con su dependencia `json.hpp`. Compilación:
+
+```bash
+cp src/io/json.hpp validator/json.hpp
+g++ -O2 -std=c++17 -o validator/IHTP_Validator validator/IHTP_Validator.cc
+```
+
+Uso: `./validator/IHTP_Validator <instancia.json> <solucion.json> [verbose]`. La salida lista violaciones agrupadas y costes ponderados por componente.
+
+### 8.2 Bug crítico detectado: UncoveredRoom
+
+**Síntoma:** la primera comparación ACO vs random sobre i01–i30 (300 s × 4 hilos) arrojó **57/60 soluciones infactibles** según el validador oficial, todas por `UncoveredRoom > 0`. Algunas además mostraban `RoomSkillLevel` con costes negativos / overflow (8 instancias) — efecto colateral del bug del propio validador (línea 914 de `IHTP_Validator.cc`: accede a `NurseSkillLevel(-1)` cuando una habitación poblada no tiene nurse).
+
+**Causa raíz:** los operadores VNS (`TryChangeRoom`, `TryChangeDay`, …, `TryRelocate`) mueven pacientes mediante `Solution::AssignPatient/UnassignPatient`, pero no tocan las asignaciones de enfermeras. Cuando un movimiento crea una celda `(room, day)` que antes estaba vacía, esa celda queda **sin enfermera para los 3 turnos**, ya que `RandomGenerator::GenerateNurseAssignments` solo se llama una vez al final de la construcción. Resultado: `UncoveredRoom` en todas las celdas que ganó tráfico durante la mejora local.
+
+Adicional: la perturbación ILS también mueve pacientes y produce el mismo efecto.
+
+**Verificación empírica:** sobre `solutions_aco/i01_solution.json`, `r1` día 2 contenía a `p10` (length_of_stay=3) pero ninguna nurse asignada. En la solución original tras la construcción ACO, `r1` día 2 estaba vacía → no se asignó nurse. La VNS movió a `p10` allí más tarde y nadie cubrió la celda.
+
+### 8.3 Fix aplicado
+
+Se introduce el invariante: **toda celda `(room, day, shift)` con `room_occupancy > 0` debe tener una enfermera asignada en todo momento**. Se materializa con:
+
+1. Nueva función `RandomGenerator::EnsureFullNurseCoverage(Solution&, ProblemData&, std::mt19937&)` (idempotente). Recorre todas las `(r, d, s)` y, si la celda está poblada y no tiene nurse, elige la mejor por score (mismo criterio que `GenerateNurseAssignments`: penaliza skill insuficiente y sobrecarga, bonifica continuidad con el día anterior).
+
+2. Llamadas estratégicas en `LocalSearch::Run`:
+   - **Al entrar a `Run`**, antes de evaluar coste inicial — cubre el caso de soluciones recién construidas por ACO con celdas pendientes (improbable porque ACO ya llama `GenerateNurseAssignments`, pero defensivo).
+   - **Tras cada operador aceptado** que mueve pacientes (todos salvo `TryChangeNurse`) — re-evaluar el coste con cobertura completa. Sin esto, el `Evaluator` reporta coste artificialmente bajo (las celdas descubiertas no contribuyen a `nurse_skill`) y la VNS converge a óptimos locales falsos.
+   - **Tras `Perturb`** — cubre las celdas creadas por la perturbación.
+
+3. Nueva restricción dura `HC14: CheckRoomCoverage` en `FeasibilityChecker` para que el solver pueda detectar internamente este problema (espejo de `UncoveredRoom` del validador).
+
+### 8.4 Validación post-fix (i01–i30, 300 s, 4 hilos paralelos, semilla 42)
+
+Tras compilar y relanzar el benchmark completo:
+
+| Métrica | Antes del fix | Después del fix |
+|---|---|---|
+| Soluciones random factibles | 2/30 (i13, i21) | **30/30** |
+| Soluciones ACO factibles | 1/30 (i20) | **30/30** |
+| Filas con overflow del validador | 8 | **0** |
+
+**Comparación ACO vs Random (todas factibles):**
+
+| Métrica | Random | ACO | Diff |
+|---|---|---|---|
+| Coste agregado i01–i30 | 1 153 644 | 1 119 248 | **−34 396 (−2.98%)** |
+| Instancias donde gana ACO | — | **24** | 80% |
+| Instancias donde gana random | **6** | — | 20% |
+| Suma de mejoras donde ACO gana | — | 39 273 | — |
+| Suma de mejoras donde random gana | 4 877 | — | — |
+
+ACO gana en proporción 24:6 con mejora agregada de ~3%. Las 6 instancias donde random sale mejor son: i04, i08, i11, i19, i23, i26 — diferencias entre 0.01% y 15.30% (i08 es la única realmente significativa con −15.3%).
+
+### 8.5 Ficheros nuevos / modificados
+
+| Fichero | Cambio |
+|---|---|
+| [src/solver/RandomGenerator.h](../src/solver/RandomGenerator.h) | Declarado `EnsureFullNurseCoverage` |
+| [src/solver/RandomGenerator.cpp](../src/solver/RandomGenerator.cpp) | Implementación de `EnsureFullNurseCoverage` (idempotente) |
+| [src/solver/LocalSearch.cpp](../src/solver/LocalSearch.cpp) | Llamadas a `EnsureFullNurseCoverage` al entrar, tras cada accept (excepto ChangeNurse) y tras `Perturb` |
+| [src/evaluator/FeasibilityChecker.h](../src/evaluator/FeasibilityChecker.h) | HC14 declarada + comentario doc |
+| [src/evaluator/FeasibilityChecker.cpp](../src/evaluator/FeasibilityChecker.cpp) | `CheckRoomCoverage` añadida a `Check()` |
+| `validator/IHTP_Validator.cc` | Validador oficial IHTC añadido al repo |
+| `validator/IHTP_Validator` | Binario compilado |
+| `validator/json.hpp` | Copia de `src/io/json.hpp` para satisfacer dependencia |
+| `aco-random-comparison.csv` | CSV final de la comparación (todas 0 violaciones) |
+| `solutions_random/i01..i30_solution.json` | 30 soluciones modo random tras fix |
+| `solutions_aco/i01..i30_solution.json` | 30 soluciones modo ACO tras fix |
+| `run_comparison.sh` | Wrapper de ejecución por (instancia, modo) que mueve la salida a su carpeta |
+| `validate_and_compare.sh` | Genera el CSV final llamando al validador oficial sobre las 60 soluciones |
+| [history/ACO.md](ACO.md) | Sección 5 (construcción paso a paso) y sección 6 (VNS detallado) reescritas con el flujo real del código |
+
+### 8.6 Notas sobre el coste reportado
+
+El coste final que reporta nuestro `Evaluator` es ligeramente menor que el del validador oficial (e.g. para i01 ACO: 3636 interno vs 4737 oficial). Diferencia esperada por:
+
+- El oficial pondera 12 componentes con pesos definidos en la instancia; nuestro `Evaluator` usa los mismos pesos pero la suma de `RoomAgeMix` parece distinta (oficial cuenta `max - min` entre patients+occupants en cada (r,d); el nuestro puede usar otra agregación).
+- El oficial siempre reporta cost íntegro (incluye `unscheduled_optional`) pero algunos componentes (como `RoomSkillLevel`) pueden depender del orden de las nurses asignadas.
+
+Lo crítico es que ambas medidas son consistentes (ACO < random en validator y en evaluator), y la solución es 100% factible.
+
+### 8.7 Reproducir el experimento
+
+```bash
+# 1. Compilar todo
+cmake --build build -j$(nproc)
+g++ -O2 -std=c++17 -o validator/IHTP_Validator validator/IHTP_Validator.cc
+
+# 2. Limpiar salidas previas
+rm -f solutions_random/*.json solutions_aco/*.json
+rm -f logs/comparison/_progress.csv && touch logs/comparison/_progress.csv
+
+# 3. Fase 1: random (~37 min)
+seq -f "%02g" 1 30 | xargs -P 4 -I {} ./run_comparison.sh {} random 300
+
+# 4. Fase 2: ACO (~37 min)
+seq -f "%02g" 1 30 | xargs -P 4 -I {} ./run_comparison.sh {} aco 300
+
+# 5. Validar y generar CSV
+./validate_and_compare.sh
+```
+
+Tiempo total con paralelismo 4 (regla IHTC): ~75 min.

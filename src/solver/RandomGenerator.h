@@ -38,6 +38,15 @@ class RandomGenerator {
                                        const ProblemData& problem,
                                        std::mt19937& rng);
 
+  // garantiza que toda (room, day, shift) con pacientes/ocupantes tiene una
+  // enfermera asignada. Idempotente: respeta las asignaciones existentes y solo
+  // rellena las posiciones donde falta cobertura.
+  // Necesario tras movimientos de LocalSearch que crean nuevas celdas
+  // (room, day) pobladas sin pasar por GenerateNurseAssignments.
+  static void EnsureFullNurseCoverage(Solution& solution,
+                                      const ProblemData& problem,
+                                      std::mt19937& rng);
+
   // intenta asignar un paciente probando todos los dias de su ventana (sin forzar)
   static bool TryAssignPatientFeasibly(Solution& solution, PatientId pid,
                                        const ProblemData& problem,

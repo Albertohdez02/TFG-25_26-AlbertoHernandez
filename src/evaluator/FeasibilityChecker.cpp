@@ -78,6 +78,7 @@ FeasibilityResult FeasibilityChecker::Check(const Solution& solution) {
   CheckNurseAvailability(solution, prob, result);
   CheckSurgeonOvertime(solution, prob, result);
   CheckOTOvertime(solution, prob, result);
+  CheckRoomCoverage(solution, prob, result);
 
   return result;
 }
@@ -354,6 +355,28 @@ void FeasibilityChecker::CheckOTOvertime(const Solution& sol,
             prob.GetOperatingTheater(ot).GetId() + " dia " +
                 std::to_string(d) + ": carga " + std::to_string(load) +
                 " > disponibilidad " + std::to_string(avail));
+      }
+    }
+  }
+}
+
+// HC14: cobertura de enfermeras
+// Toda (room, day, shift) con pacientes u ocupantes debe tener una enfermera
+// asignada. Equivale al UncoveredRoom del validador oficial IHTC.
+void FeasibilityChecker::CheckRoomCoverage(const Solution& sol,
+                                           const ProblemData& prob,
+                                           FeasibilityResult& result) {
+  int num_shifts = prob.GetNumShiftTypes();
+  for (RoomId r = 0; r < prob.GetNumRooms(); ++r) {
+    for (Day d = 0; d < prob.GetNumDays(); ++d) {
+      if (sol.GetRoomOccupancy(r, d) == 0) continue;
+      for (Shift s = 0; s < num_shifts; ++s) {
+        if (sol.GetNurseAssignment(r, d, s) == kInvalidId) {
+          result.AddViolation(
+              "HC14", prob.GetRoom(r).GetId() + " dia " + std::to_string(d) +
+                          " turno " + std::to_string(s) +
+                          ": habitacion sin enfermera (UncoveredRoom)");
+        }
       }
     }
   }
