@@ -297,8 +297,80 @@ bool RandomGenerator::TryAssignOnDay(Solution& solution, Day day,
 
   if (rooms.empty() || ots.empty()) return false;
 
-  std::shuffle(rooms.begin(), rooms.end(), rng);
-  std::shuffle(ots.begin(), ots.end(), rng);
+  // Heuristica informada (Fase A): se ordenan habitaciones por una clave
+  // que aproxima los costes blandos `room_gender_mix` y `room_mixed_age`,
+  // y a igualdad se prefieren las mas llenas (concentrar pacientes evita
+  // abrir habitaciones extra y mejora continuity_of_care). Solo se baraja
+  // el top-3 para mantener diversidad entre llamadas a Generate.
+  Gender pgender = patient.GetGender();
+  AgeGroup pagegroup = patient.GetAgeGroup();
+  int stay = patient.GetLengthOfStay();
+  int num_days = problem.GetNumDays();
+  Day stay_end = std::min<Day>(day + stay - 1, num_days - 1);
+
+  struct RoomScore {
+    RoomId room;
+    int gender_pen;
+    int age_pen;
+    int neg_occupancy;
+  };
+  std::vector<RoomScore> scored;
+  scored.reserve(rooms.size());
+  for (RoomId r : rooms) {
+    int gender_pen = 0;
+    int age_pen = 0;
+    int occupancy = 0;
+    for (Day cd = day; cd <= stay_end; ++cd) {
+      Gender rg = solution.GetRoomGender(r, cd);
+      // rg == -2 mezcla ya existente, == kGenderAny vacio,
+      // valor concreto: genero homogeneo
+      if (rg == -2) {
+        gender_pen += 2;  // ya hay mezcla, peor opcion
+      } else if (rg != kGenderAny && pgender != kGenderAny &&
+                 rg != pgender) {
+        gender_pen += 1;  // este paciente introduciria mezcla
+      }
+      // edad: contar grupos distintos al del paciente
+      // (espejo de Evaluator::room_mixed_age)
+      const auto& room_pats = solution.GetRoomPatients(r, cd);
+      for (PatientId rp : room_pats) {
+        if (problem.GetPatient(rp).GetAgeGroup() != pagegroup) {
+          age_pen += 1;
+        }
+      }
+      for (const auto& occ : problem.GetOccupants()) {
+        if (occ.GetRoomId() == r && occ.IsPresentOnDay(cd)) {
+          if (occ.GetAgeGroup() != pagegroup) age_pen += 1;
+        }
+      }
+      occupancy += solution.GetRoomOccupancy(r, cd);
+    }
+    scored.push_back({r, gender_pen, age_pen, -occupancy});
+  }
+
+  std::sort(scored.begin(), scored.end(),
+            [](const RoomScore& a, const RoomScore& b) {
+              if (a.gender_pen != b.gender_pen)
+                return a.gender_pen < b.gender_pen;
+              if (a.age_pen != b.age_pen) return a.age_pen < b.age_pen;
+              return a.neg_occupancy < b.neg_occupancy;  // mas llena primero
+            });
+
+  // Barajar solo el top-3 para mantener algo de diversidad
+  std::size_t top_k = std::min<std::size_t>(3, scored.size());
+  std::shuffle(scored.begin(), scored.begin() + top_k, rng);
+
+  rooms.clear();
+  rooms.reserve(scored.size());
+  for (const auto& s : scored) rooms.push_back(s.room);
+
+  // OTs: ordenar por carga descendente (concentrar cirugias minimiza
+  // `open_ot`). Sin shuffle: el espacio es muy pequeño (2-5 OTs).
+  std::sort(ots.begin(), ots.end(),
+            [&solution, day](OperatingTheaterId a, OperatingTheaterId b) {
+              return solution.GetOTLoad(a, day) >
+                     solution.GetOTLoad(b, day);
+            });
 
   for (RoomId room : rooms) {
     for (OperatingTheaterId ot : ots) {

@@ -36,6 +36,12 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
 
 # =============================================================================
+# Threads (used by ACOSolver to parallelize ant colony at iteration level)
+# =============================================================================
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
+# =============================================================================
 # Source Files
 # =============================================================================
 # Entity headers (header-only classes)
@@ -87,6 +93,9 @@ target_include_directories(ihtc_core PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
 )
+
+# Link pthread for std::thread used by ACOSolver
+target_link_libraries(ihtc_core PUBLIC Threads::Threads)
 
 # =============================================================================
 # Main Executable

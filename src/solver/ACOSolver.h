@@ -32,13 +32,14 @@
 
 // Parametros del algoritmo ACO
 struct ACOParams {
-  int    n_ants       = 5;    // hormigas por iteracion
+  int    n_ants       = 12;   // hormigas por iteracion (mas hormigas, VNS mas corta)
   double alpha        = 1.0;  // exponente de la feromona en la regla de seleccion
   double beta         = 2.0;  // exponente de la heuristica en la regla de seleccion
   double rho          = 0.10; // tasa de evaporacion [0,1]
   double q0           = 0.90; // probabilidad de explotacion (argmax vs ruleta)
   double tau_init     = 1.0;  // feromona inicial para posiciones feasibles
   int    stagnation_k = 15;   // iteraciones sin mejora global antes de reinicializar
+  int    pool_size    = 4;    // hilos paralelos por iteracion (regla IHTC: max 4)
 };
 
 class ACOSolver {
@@ -83,6 +84,15 @@ class ACOSolver {
   static void ResetPheromones(PheromoneMatrix& tau_day,
                                PheromoneMatrix& tau_room,
                                const ProblemData& problem, double tau_init);
+
+  // siembra feromona elevada en las decisiones de una solucion semilla
+  // (warm-start). Para los arcs del seed coloca tau_max; el resto de
+  // posiciones feasibles se ponen a tau_min para crear el contraste MMAS.
+  static void SeedPheromones(PheromoneMatrix& tau_day,
+                              PheromoneMatrix& tau_room,
+                              const Solution& seed, int seed_cost,
+                              const ProblemData& problem,
+                              const ACOParams& params);
 
   // seleccion pseudoproporcional ACS sobre un vector de scores
   // con prob q0 devuelve el argmax (explotacion)

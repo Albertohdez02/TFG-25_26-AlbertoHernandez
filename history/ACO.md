@@ -411,6 +411,8 @@ El modo "random" en `main.cpp` reproduce exactamente el comportamiento anterior.
 - [ ] Añadir `τ_ot` para instancias con muchos quirófanos (m-series)
 - [ ] Explorar MMAS con actualización de la mejor global vs. mejor de iteración (actualmente alterna)
 - [x] ~~Benchmark completo i01–i30 comparando ACO vs random con 600s~~ → ver `history/project-history.md` §8
+- [x] ~~Implementar warm-start (§13.1), n_ants=12 (§13.2), multi-threading (§13.3) y heurística informada en RandomGenerator~~ → ver §14
+- [ ] Re-lanzar benchmark completo i01–i30 con Fases A+B+C+D y 600 s/instancia para regenerar las figuras de `graficas/`
 
 ---
 
@@ -536,3 +538,221 @@ La proyección de +35–40% es heurística (basada en cómo el gap medio escala 
 - **Heurística η** (sec. 3.2): mejorarla teóricamente da impacto, pero requiere calibrar pesos por componente y es fácil empeorar las cosas si están mal sintonizados. Dejar para después de las tres anteriores.
 - **`τ_ot`** (sec. 5.4): solo aporta en m-series; en i01–i30 no merece la pena.
 - **Backtracking en construcción**: ataca i16/i20 (donde se dispara `ForceAssignMandatory`) pero esas no son las instancias más caras. Coste/beneficio bajo.
+
+---
+
+## 14. Sesión 2026-05-06 — Implementación de las mejoras §13
+
+Implementación incremental de las cuatro mejoras propuestas en §13, validando cada fase con el validador oficial antes de seguir. El plan está en `/home/alberto/.claude/plans/ahora-mismo-tengo-un-swirling-axolotl.md`.
+
+### 14.1 Fase A — Heurística informada en `RandomGenerator::TryAssignOnDay`
+
+**Objetivo.** El `RandomGenerator` se usa en dos contextos: (1) generador del modo `random` y (2) — tras esta sesión — generador del *seed* del warm-start del ACO (Fase B). Si la primera elección de habitación/OT ya fuera "razonablemente buena" en lugar de puramente aleatoria, la VNS partiría de soluciones más cercanas al óptimo y el seed del warm-start tendría más calidad para sembrar la feromona.
+
+**Cambio.** En [src/solver/RandomGenerator.cpp](../src/solver/RandomGenerator.cpp) `TryAssignOnDay`, antes del bucle `for (room) for (ot)`:
+
+1. **Habitaciones** ahora se ordenan por una clave de tres niveles que refleja directamente los costes blandos `room_gender_mix`, `room_mixed_age` y `open_room` (en `Evaluator`):
+   - Nivel 1 — `gender_pen`: para cada día de la estancia `[day, day+stay-1]`, +2 si `GetRoomGender(r,d) == -2` (mezcla ya existente, peor opción) y +1 si el género del paciente introduciría mezcla nueva.
+   - Nivel 2 — `age_pen`: +1 por cada paciente u ocupante presente en `(r, d)` cuyo `AgeGroup` difiere del paciente (espejo del cálculo en `Evaluator::room_mixed_age`, [src/evaluator/Evaluator.cpp:128-155](../src/evaluator/Evaluator.cpp#L128-L155)).
+   - Nivel 3 — `−occupancy`: a igualdad, preferir habitaciones más llenas (concentrar pacientes evita abrir extras).
+   - Tras ordenar, se baraja el top-3 con `std::shuffle` para mantener diversidad entre llamadas a `Generate`.
+2. **Quirófanos** ahora se ordenan por `GetOTLoad(ot, day)` descendente (preferir los más cargados, igual criterio que ACO en [src/solver/ACOSolver.cpp:297-306](../src/solver/ACOSolver.cpp#L297-L306)). Sin shuffle: el espacio es muy pequeño (2–5 OTs en serie i).
+
+La firma pública no cambia. Solo afecta a las llamadas a `TryAssignOnDay` desde `GeneratePatientAssignments` (fase 1 obligatorios y fase 3 opcionales) y desde `TryAssignPatientFeasibly` (reparación). No introduce cambios en cobertura de enfermeras ni en factibilidad — solo cambia el orden de exploración.
+
+**Validación.** Build limpio. Sanity con `./build/ihtc_solver data/i04.json 42 2000 5 30 random`:
+- Coste interno: 920 (vs 585 con 600 s, dentro del rango esperado para 30 s).
+- Validador oficial sobre `solutions/i04_solution.json`: **0 violaciones**, coste 4248.
+
+Mini-benchmark formal (i04, i17, i26 con 300 s × semilla 42, modo `aco`) se hará al final de las cuatro fases para no triplicar el coste de cómputo entre cambios pequeños.
+
+**Ficheros**: [src/solver/RandomGenerator.cpp](../src/solver/RandomGenerator.cpp) (función `TryAssignOnDay`).
+
+### 14.2 Fase B — Warm-start de feromonas desde un seed Random+VNS
+
+**Objetivo.** Sembrar la feromona inicial con las decisiones reales de una solución factible producida por `RandomGenerator::Generate + LocalSearch::Run`, para que las hormigas de la primera iteración del bucle ACO ya muestreen un punto del espacio de búsqueda donde la VNS demostró que se puede llegar a calidad razonable.
+
+**Cambio.**
+
+1. **Header** [src/solver/ACOSolver.h](../src/solver/ACOSolver.h): nueva función privada `SeedPheromones(tau_day, tau_room, seed, seed_cost, problem, params)`.
+
+2. **Implementación de `SeedPheromones`** ([src/solver/ACOSolver.cpp](../src/solver/ACOSolver.cpp)): tras `InitPheromones`, recibe una solución factible y:
+   - Calcula `tau_max = 1/(rho × seed_cost)` y `tau_min = tau_max/(2 × num_patients)` con la misma fórmula que `UpdatePheromones` para mantener la coherencia MMAS.
+   - Pone todas las posiciones feasibles a `tau_min`.
+   - Pone los arcs del seed (cada paciente programado → su día y su habitación) a `tau_max`.
+   - Las posiciones infeasibles permanecen en 0.0 (siguen sin ser elegibles).
+
+3. **Modificación de `Run`** ([src/solver/ACOSolver.cpp](../src/solver/ACOSolver.cpp), tras `PrecomputeHeuristics`):
+   - `warm_budget = min(30 s, 5% × time_limit_s)`.
+   - Solo se ejecuta si quedan al menos `warm_budget + 5 s` y el budget es ≥ 1 s.
+   - Genera `seed = RandomGenerator::Generate(problem, seed_rng)` con un RNG derivado (`std::mt19937(rng())`) para no agotar el RNG principal.
+   - Llama a `LocalSearch::Run(seed, max_ls_iter, seed_rng, warm_budget)` (la VNS ya invoca `EnsureFullNurseCoverage` internamente, así que el seed sale con cobertura completa de enfermeras).
+   - Si `FeasibilityChecker::Check(seed).feasible == true` y `seed_cost > 0`:
+     - Llama `SeedPheromones(...)`.
+     - Inicializa `best_solution = seed` y `best_cost = seed_cost`. Esto sirve como suelo de calidad: todas las hormigas posteriores compiten contra el seed.
+   - Si el seed sale infactible (i16/i20 muy restringidas), se cae al esquema `tau_init` uniforme original sin tocar nada (defensivo).
+
+**Detalle de diseño crítico.** El seed NO se inyecta como hormiga 0 de la primera iteración. Si lo hiciéramos, su coste tendería a dominar `iteration_best` y la feromona convergería prematuramente sobre él, perdiendo el efecto exploratorio de la colonia. Solo se usa para sesgar la inicialización y como primer `best_solution` global.
+
+**Impacto sobre el bucle de pheromonas.** Tras Fase B, la primera iteración construye con un contraste τ_max/τ_min ya activo (en lugar de τ_init uniforme), por lo que la regla ACS pseudoproporcional (`q0 = 0.90`) explota desde el inicio las decisiones del seed. Las decisiones distintas siguen siendo elegibles (τ_min > 0) pero con probabilidad reducida.
+
+**Validación.** Build limpio. Sanity con `./build/ihtc_solver data/i04.json 42 2000 5 60 aco`:
+- Coste interno: 855 (vs 920 modo `random` 30 s en Fase A; vs 585 modo `aco` 600 s antes de las mejoras — pendiente comparación a iso-tiempo).
+- Validador oficial sobre `solutions/i04_solution.json`: **0 violaciones**.
+
+**Ficheros**:
+- [src/solver/ACOSolver.h](../src/solver/ACOSolver.h) (declaración `SeedPheromones`).
+- [src/solver/ACOSolver.cpp](../src/solver/ACOSolver.cpp) (implementación `SeedPheromones` + bloque warm-start en `Run`).
+
+### 14.3 Fase C — `n_ants` 5 → 12 + override por CLI
+
+**Cambio.**
+
+1. [src/solver/ACOSolver.h](../src/solver/ACOSolver.h): `ACOParams::n_ants` default 5 → **12**. Comentario actualizado.
+
+2. [src/main.cpp](../src/main.cpp):
+   - Nuevo argumento CLI opcional, 7º en posición: `n_ants`. Si se pasa con valor positivo, sobrescribe el default de `ACOParams`.
+   - Mensaje de uso ampliado: `<instancia.json> [seed] [max_iter] [restarts] [time_s] [mode] [n_ants]`.
+   - El log imprime `Hormigas por iteracion: N` para verificar que el override se aplica.
+
+**Por qué subir a 12.** En 600 s con `n_ants = 5`, el bucle externo de ACO completa solo 3–5 iteraciones porque cada hormiga consume ~50 s en VNS. La feromona apenas tiene tiempo de aprender. Con `n_ants = 12` y `time_per_ant ≈ remaining_s() / 13`, cada hormiga corre ~46 s al inicio y va decreciendo a medida que avanza el tiempo, pero el número total de actualizaciones de feromona pasa de 3–5 a 10–15 — 3× más oportunidades de aprendizaje. A iso-tiempo total, la VNS individual hace marginalmente menos trabajo (rendimientos decrecientes en sus últimos segundos) pero el aprendizaje colectivo de la colonia es mucho mejor.
+
+**No tocado.** `ACOSolver::Run` ya reparte el tiempo correctamente con `time_per_ant = remaining_s() / (n_ants + 1.0)` ([src/solver/ACOSolver.cpp:69](../src/solver/ACOSolver.cpp#L69)), así que no requiere ningún cambio estructural.
+
+**Validación.** Build limpio. Sanity con `./build/ihtc_solver data/i04.json 42 2000 5 60 aco`:
+- Log muestra `Hormigas por iteracion: 12`.
+- Coste interno: 918 (más alto que 855 con `n_ants=5` a 60 s — esperado: a 60 s totales `n_ants=12` da solo ~4.6 s por hormiga, insuficiente para una VNS profunda).
+- Validador oficial: **0 violaciones**.
+
+> A 60 s, `n_ants=5` saca más rendimiento porque cada hormiga tiene ~12 s para una VNS más completa. La ganancia real de `n_ants=12` se materializa a 600 s (presupuesto de competición), donde 4–5 s/hormiga vs 12 s/hormiga sigue siendo VNS productiva pero la diversidad y las actualizaciones de feromona compensan con creces.
+
+**Ficheros**: [src/solver/ACOSolver.h](../src/solver/ACOSolver.h), [src/main.cpp](../src/main.cpp).
+
+### 14.4 Fase D — Multi-threading: hormigas en paralelo dentro de cada iteración
+
+**Objetivo.** La regla del concurso permite 4 hilos por instancia. Hasta ahora `ACOSolver::Run` era 100 % single-threaded y la pauta de ejecución compensaba lanzando 4 instancias en paralelo con `xargs -P4`. Esto no acelera el aprendizaje del ACO **dentro** de cada instancia. Paralelizando las hormigas a nivel de iteración, cada actualización de feromona se basa en 4× más muestras por unidad de tiempo wall-clock.
+
+**Diseño.** Las matrices `tau_day` y `tau_room` son **solo de lectura** durante `ConstructSolution`. Las únicas escrituras a feromona ocurren en `UpdatePheromones` y `ResetPheromones`, ambas fuera del bloque paralelo. Por tanto no hay condiciones de carrera reales y no se necesitan mutex durante la construcción.
+
+**Implementación.**
+
+1. **`ACOParams::pool_size`** ([src/solver/ACOSolver.h](../src/solver/ACOSolver.h)): nuevo campo, default 4 (regla IHTC). No se expone por CLI; se usa el default por ahora.
+
+2. **`CMakeLists.txt`**: añadido `find_package(Threads REQUIRED)` y `target_link_libraries(ihtc_core PUBLIC Threads::Threads)` para garantizar el linkado de pthread cuando se use `std::thread`.
+
+3. **`ACOSolver.cpp`** (`Run`):
+   - Sustituido el bucle `for (int k = 0; k < n_ants; ++k)` por **paralelismo por lotes**: las hormigas se procesan en batches de hasta `pool_size` simultáneas, lanzando un `std::thread` por hormiga del batch y haciendo `join` antes de pasar al siguiente.
+   - Cada hormiga recibe su propio `std::mt19937` derivado de una semilla generada con el RNG principal *antes* del paralelo (`ant_seeds[k] = rng()`), así que el RNG principal se consume de forma determinista y cada hormiga es reproducible aisladamente.
+   - Cada hormiga construye una `Solution` local, ejecuta su VNS, y deja `(solution, cost)` en `results[k]`.
+   - Tras los `join` de todos los batches, **una pasada secuencial** procesa los resultados en orden de hormiga: actualiza `iteration_best` y `best_solution` global. Mantener este orden estable evita una fuente extra de no-determinismo (los empates se resuelven por índice de hormiga, no por orden de finalización del hilo).
+   - El reparto de tiempo se ajusta a `time_per_batch = remaining_s() / (num_batches + 1)` con `num_batches = ceil(n_ants / pool_size)`. Con `n_ants=12, pool_size=4` se obtienen 3 batches: cada batch corre ~`remaining/4` segundos en paralelo, así que el "tiempo lineal por hormiga" sigue siendo del mismo orden que single-threaded a `n_ants=5`, pero con 12 hormigas en lugar de 5.
+
+4. **Headers añadidos**: `<thread>`, `<utility>` para `std::move`.
+
+**Trade-off de determinismo.** Con paralelismo, dos ejecuciones con la misma semilla producen las mismas hormigas individuales (porque cada una tiene su sub-RNG derivado de forma determinista del RNG principal), y la recolección secuencial mantiene el orden de empates. La única fuente residual de no-determinismo viene de `LocalSearch::Run` si llamara a alguna primitiva del SO con timing-dependiente, pero por código no parece ser el caso. El usuario ya documentó (§13.3) que la mejora estadística supera la pérdida de reproducibilidad bit a bit.
+
+**Pauta de ejecución del benchmark final.** Pasamos de **4 instancias × 1 hilo en paralelo** (`xargs -P4`) a **1 instancia × 4 hilos secuencial**. El tiempo total de pared se mantiene aproximadamente igual (4 × 600 s × 1 hilo ≈ 1 × 600 s × 4 hilos × 4 instancias) pero ahora cada instancia individual aprovecha el paralelismo permitido por el reglamento.
+
+**Validación.** Build limpio. Sanity con `time ./build/ihtc_solver data/i04.json 42 2000 5 60 aco`:
+- `Hormigas por iteracion: 12`
+- `real 0m54s, user 3m14s` → speedup efectivo ~3.5× (límite teórico 4×, overhead esperado por VNS de duración variable y join sincrónico al final del batch).
+- Coste interno: 788 (mejora respecto a Fase C 918 single-thread con el mismo presupuesto).
+- Validador oficial: **0 violaciones**.
+
+**Ficheros**:
+- [src/solver/ACOSolver.h](../src/solver/ACOSolver.h) (`pool_size` en `ACOParams`).
+- [src/solver/ACOSolver.cpp](../src/solver/ACOSolver.cpp) (paralelización por lotes en `Run`, headers `<thread>` y `<utility>`).
+- [CMakeLists.txt](../CMakeLists.txt) (`find_package(Threads)` + linkado a `ihtc_core`).
+
+### 14.5 Mini-benchmark consolidado tras Fases A+B+C+D
+
+Las cuatro mejoras se validan a iso-tiempo (300 s, semilla 42) en tres instancias representativas: `i04` (donde el ACO original perdía contra Random), `i17` y `i26` (instancias grandes donde el ACO ya ganaba pero seguía lejos del óptimo). Cada ejecución usa 4 hilos dentro del solver (Fase D); las instancias se lanzan secuencialmente para no superar el límite de la competición.
+
+**Coste oficial del validador IHTC** — comparativa pre-mejoras (datos de `tables/aco-random-comparison.csv`, ACO con `n_ants=5`, single-thread, sin warm-start) vs post-mejoras (Fases A+B+C+D, `n_ants=12`, pool 4):
+
+| Instancia | ACO pre | ACO post | Δ absoluto | Δ % | Best (oficial) | Gap pre → post |
+|---|---:|---:|---:|---:|---:|---:|
+| i04 | 4 822 | **4 658** | −164 | −3.4 % | 1 884 | 156 % → 147 % |
+| i17 | 69 980 | **65 875** | −4 105 | −5.9 % | 40 535 | 73 % → 63 % |
+| i26 | 107 079 | **104 554** | −2 525 | −2.4 % | 64 613 | 66 % → 62 % |
+| **Total** | **181 881** | **175 087** | **−6 794** | **−3.7 %** | 107 032 | 70 % → 64 % |
+
+**Validación oficial:** 3/3 instancias **0 violaciones** según `IHTP_Validator`.
+
+**Lectura de los resultados.**
+
+- Mejora consistente en las tres instancias (no hay ningún caso donde post-mejoras empeore).
+- La mejora porcentual mayor está en `i17` (−5.9 %), instancia mediana donde el bottleneck antes era el número bajo de iteraciones del bucle externo de ACO. Encaja con la teoría de §13: las Fases C+D multiplican las actualizaciones de feromona y la Fase B siembra el aprendizaje informado desde el inicio.
+- En `i04` la mejora es más modesta (−3.4 %). Esta instancia es pequeña y ya saturada por la VNS antes de las mejoras; la Fase A (heurística informada) y la Fase B (warm-start) son las que más aportan aquí.
+- El gap agregado contra `best-solutions/` cae de 70 % a 64 % a iso-tiempo de 300 s. Con el presupuesto completo de competición (600 s) y el benchmark `i01–i30` se espera ampliar la mejora porque las Fases C+D se benefician de tiempos más largos (más iteraciones del bucle externo).
+
+**Pendientes para sesiones siguientes.**
+
+1. Lanzar el benchmark completo `i01–i30` con 600 s/instancia (regla del concurso) para producir el CSV equivalente a `tables/aco-random-comparison.csv` y regenerar las figuras de [graficas/](../graficas/).
+2. Comparar también modo `random` post-Fase A (la Fase A afecta tanto a `RandomGenerator` como al seed del warm-start). Esperable: el modo `random` también baja un poco su gap por la heurística informada en `TryAssignOnDay`.
+3. Si tras el benchmark completo persiste un subconjunto de instancias donde ACO+VNS no se acerca a `best-solutions/`, considerar las propuestas de §13.5 (extensión de `η_room` con penalty de género, `τ_ot`, backtracking en construcción).
+
+### 14.6 Marcado de tareas
+
+Se actualizan los checks de §13: las tres mejoras propuestas están implementadas y validadas en mini-benchmark.
+
+### 14.7 Benchmark completo i01–i30 (600 s) — Fases A+B+C+D
+
+**Setup.** 30 instancias × 600 s × 4 hilos por solver. 5 instancias en paralelo (20 cores disponibles, cada solver consume su cuota de 4). Wall-clock total: ~60 min. Semilla 42. Las soluciones de modo `random` son las mismas que el benchmark §8.4 (`solutions_random/`, sin regenerar) — las soluciones ACO antiguas se preservan en `solutions_aco_v1/` y las nuevas se escriben en `solutions_aco/`. Tabla CSV en [tables/aco-random-comparison-v2.csv](../tables/aco-random-comparison-v2.csv) y figuras en [graficas_v2/](../graficas_v2/).
+
+**Resultados agregados (validador oficial IHTC, 30/30 factibles, 0 violaciones).**
+
+| Métrica | ACO v1 (pre-mejoras) | ACO v2 (post-mejoras) | Random (referencia) | Best (oficial) |
+|---|---:|---:|---:|---:|
+| Coste agregado i01–i30 | 1 119 248 | **1 080 218** | 1 146 853 | 716 560 |
+| Gap medio vs best | +56.4 % | **+52.5 %** | +60.3 % | — |
+| Mediana gap vs best | — | **+49.7 %** | +57.3 % | — |
+| ACO mejor que Random | 24/30 | **27/30** | — | — |
+
+**Mejora ACO v1 → v2:** −39 030 puntos absolutos (−3.5 %). Mejora del ratio de victoria contra Random de 80 % a 90 %. La mediana del gap baja de ~55 % a ~50 %, indicando que la mejora es consistente en la mitad central de las instancias, no concentrada en outliers.
+
+**Top mejoras absolutas ACO v2 vs Random** (de [tables/aco-random-comparison-v2.csv](../tables/aco-random-comparison-v2.csv)):
+
+| Instancia | ACO v2 | Random | Δ abs | Δ % |
+|---|---:|---:|---:|---:|
+| i22 | 85 405 | 95 334 | −9 929 | −10.4 % |
+| i27 | 97 948 | 106 586 | −8 638 | −8.1 % |
+| i17 | 65 765 | 74 330 | −8 565 | −11.5 % |
+| i21 | 37 236 | 42 533 | −5 297 | −12.5 % |
+| i26 | 103 732 | 107 646 | −3 914 | −3.6 % |
+| i28 | 86 910 | 90 065 | −3 155 | −3.5 % |
+
+**Las 3 instancias donde Random sigue ganando a ACO v2** (i04, i08, i09):
+
+| Instancia | ACO v2 | Random | Best | Δ ACO−Random |
+|---|---:|---:|---:|---:|
+| i04 | 4 658 | 4 590 | 1 884 | +68 (+1.5 %) |
+| i08 | 16 877 | 13 199 | 6 291 | +3 678 (+27.9 %) |
+| i09 | 10 275 | 10 212 | 6 682 | +63 (+0.6 %) |
+
+`i08` sigue siendo el caso patológico (era el peor en v1 también, con −15.3 %; ahora es −27.9 %). Es probable que el seed de warm-start esté aterrizando en una cuenca de atracción mala para esta instancia y la feromona refuerce esa decisión durante el resto del run; lo investigamos más adelante.
+
+**Lectura general.**
+
+- La hipótesis del bottleneck (§13: pocas iteraciones del bucle externo de ACO) se confirma. Con multi-threading el bucle externo completa ~10–15 actualizaciones de feromona en lugar de 3–5, y eso es lo que mueve el gap.
+- El warm-start (Fase B) ayuda especialmente a instancias grandes (i17, i22, i27) donde la feromona uniforme costaba arrancar.
+- En instancias pequeñas (i04, i09) la VNS ya era casi óptima; las Fases A+B no consiguen mejorar lo que la búsqueda local ya estaba capturando.
+
+**Líneas siguientes para reducir más el gap.**
+
+1. **Caso i08**: hacer un análisis dirigido. Posibles causas: warm-start con i08 cae en óptimo local malo y el contraste τ_max/τ_min creado lo bloquea. Una mitigación es lanzar varios seeds en warm-start (random restarts) y elegir el mejor.
+2. **`τ_ot`** (§5.4 / §13.5) podría ayudar en m-series; se mantiene como pendiente.
+3. **Análisis de componentes** en `graficas_v2/fig5_componentes_agregados.png` para identificar qué coste blando concentra el gap a best.
+
+**Ficheros nuevos / preservados en esta sesión.**
+
+| Path | Descripción |
+|---|---|
+| [solutions_aco_v1/](../solutions_aco_v1/) | 30 soluciones ACO v1 (pre-mejoras) preservadas |
+| [solutions_aco/](../solutions_aco/) | 30 soluciones ACO v2 (Fases A+B+C+D, 600 s) |
+| [tables/aco-random-comparison-v1.csv](../tables/aco-random-comparison-v1.csv) | CSV del benchmark §8.4 preservado |
+| [tables/aco-random-comparison-v2.csv](../tables/aco-random-comparison-v2.csv) | CSV nuevo (post-mejoras) |
+| [graficas_v1/](../graficas_v1/) | Figuras anteriores preservadas |
+| [graficas_v2/](../graficas_v2/) | Figuras nuevas (5 PNG + comparison_summary.csv) |
+| [scripts/plot_comparison_v2.py](../scripts/plot_comparison_v2.py) | Script ajustado: lee `solutions_aco/`, escribe en `graficas_v2/` |
+| [logs/comparison_v2/](../logs/comparison_v2/) | Logs por instancia + `_progress.csv` |

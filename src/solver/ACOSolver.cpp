@@ -14,6 +14,8 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "../evaluator/Evaluator.h"
@@ -61,37 +63,96 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
   int best_cost = std::numeric_limits<int>::max();
   int stagnation_count = 0;
 
+  // Warm-start (Fase B): producir un seed con RandomGenerator+VNS y sembrar
+  // la feromona con sus decisiones para arrancar el aprendizaje informado en
+  // lugar de uniforme. Si el seed sale infactible (i16/i20 muy restrictivas),
+  // se cae al esquema actual (tau_init uniforme) sin tocar nada.
+  double warm_budget = std::min(30.0, time_limit_s * 0.05);
+  if (warm_budget >= 1.0 && remaining_s() > warm_budget + 5.0) {
+    std::mt19937 seed_rng(rng());
+    Solution seed = RandomGenerator::Generate(problem, seed_rng);
+    LocalSearch::Run(seed, max_ls_iter, seed_rng, warm_budget);
+    if (FeasibilityChecker::Check(seed).feasible) {
+      int seed_cost = Evaluator::Evaluate(seed);
+      if (seed_cost > 0) {
+        SeedPheromones(tau_day, tau_room, seed, seed_cost, problem, params);
+        best_solution = seed;
+        best_cost     = seed_cost;
+      }
+    }
+  }
+
   while (remaining_s() > 2.0) {
     int iteration_best_cost = std::numeric_limits<int>::max();
     Solution iteration_best(problem);
 
-    // tiempo por hormiga: reparte lo que queda entre hormigas + margen
-    double time_per_ant = remaining_s() / (params.n_ants + 1.0);
-    time_per_ant = std::max(0.5, time_per_ant);
+    // tiempo por hormiga: con paralelismo, las hormigas de un mismo batch
+    // corren simultaneamente, asi que el tiempo "lineal" disponible escala
+    // con el tamano del pool (ceil(n_ants/pool_size) batches secuenciales).
+    int pool_size = std::max(1, params.pool_size);
+    int num_batches = (params.n_ants + pool_size - 1) / pool_size;
+    double time_per_batch = remaining_s() / (num_batches + 1.0);
+    double ls_time = std::max(0.5, time_per_batch);
 
-    for (int k = 0; k < params.n_ants && remaining_s() > 1.0; ++k) {
-      // 1. construccion guiada por feromonas
-      Solution candidate = ConstructSolution(tau_day, tau_room,
-                                             eta_day, eta_room,
-                                             problem, params, rng);
+    // semillas derivadas para reproducibilidad parcial: cada hormiga
+    // recibe su propia subsemilla en lugar de compartir el rng principal
+    std::vector<unsigned int> ant_seeds;
+    ant_seeds.reserve(params.n_ants);
+    for (int k = 0; k < params.n_ants; ++k) ant_seeds.push_back(rng());
 
-      // 2. mejora con VNS (tiempo limitado)
-      double ls_time = std::min(time_per_ant, remaining_s() - 0.5);
-      LocalSearchStats ls_stats = LocalSearch::Run(candidate, max_ls_iter,
-                                                   rng, ls_time);
-      int cost = ls_stats.final_cost;
+    struct AntResult {
+      Solution solution;
+      int cost;
+      bool valid;  // si la hormiga llego a ejecutarse
+    };
+    std::vector<AntResult> results;
+    results.reserve(params.n_ants);
+    for (int k = 0; k < params.n_ants; ++k) {
+      results.push_back(AntResult{Solution(problem),
+                                  std::numeric_limits<int>::max(), false});
+    }
 
-      // 3. mejor de la iteracion (puede ser infactible; se usa para feromonas)
+    int next_ant = 0;
+    while (next_ant < params.n_ants && remaining_s() > 1.0) {
+      int batch_end = std::min(next_ant + pool_size, params.n_ants);
+      double batch_ls_time = std::min(ls_time, remaining_s() - 0.5);
+      if (batch_ls_time < 0.5) break;
+
+      std::vector<std::thread> threads;
+      threads.reserve(batch_end - next_ant);
+      for (int k = next_ant; k < batch_end; ++k) {
+        threads.emplace_back([&, k]() {
+          std::mt19937 local_rng(ant_seeds[k]);
+          // 1. construccion guiada por feromonas (lectura concurrente segura:
+          //    tau y eta son const en este bloque)
+          Solution candidate = ConstructSolution(tau_day, tau_room,
+                                                 eta_day, eta_room,
+                                                 problem, params, local_rng);
+          // 2. mejora con VNS (tiempo fijo por batch)
+          LocalSearchStats st = LocalSearch::Run(candidate, max_ls_iter,
+                                                 local_rng, batch_ls_time);
+          results[k].solution = std::move(candidate);
+          results[k].cost     = st.final_cost;
+          results[k].valid    = true;
+        });
+      }
+      for (auto& t : threads) t.join();
+      next_ant = batch_end;
+    }
+
+    // 3 + 4. recoleccion secuencial (mejor de iteracion + mejor global)
+    for (int k = 0; k < params.n_ants; ++k) {
+      if (!results[k].valid) continue;
+      int cost = results[k].cost;
+
       if (cost < iteration_best_cost) {
         iteration_best_cost = cost;
-        iteration_best      = candidate;
+        iteration_best      = results[k].solution;
       }
-
-      // 4. mejor global (solo si es factible)
       if (cost < best_cost &&
-          FeasibilityChecker::Check(candidate).feasible) {
+          FeasibilityChecker::Check(results[k].solution).feasible) {
         best_cost     = cost;
-        best_solution = candidate;
+        best_solution = results[k].solution;
         stagnation_count = 0;
       }
     }
@@ -489,4 +550,63 @@ void ACOSolver::ResetPheromones(PheromoneMatrix& tau_day,
                                  const ProblemData& problem,
                                  double tau_init) {
   InitPheromones(tau_day, tau_room, problem, tau_init);
+}
+
+// ============================================================================
+// SeedPheromones
+// ============================================================================
+
+/** @brief Sembra feromona alta en las decisiones de una solucion semilla y
+ *         baja en el resto de posiciones feasibles, creando el contraste
+ *         maximo permitido por las cotas MMAS.
+ *  @param seed       Solucion factible producida por RandomGenerator+VNS.
+ *  @param seed_cost  Coste blando de la solucion (positivo).
+ *
+ *  No se usa la solucion como hormiga de la primera iteracion para evitar
+ *  que su coste domine el `iteration_best` y la feromona converja
+ *  prematuramente. Solo sesga la inicializacion.
+ */
+void ACOSolver::SeedPheromones(PheromoneMatrix& tau_day,
+                                PheromoneMatrix& tau_room,
+                                const Solution& seed, int seed_cost,
+                                const ProblemData& problem,
+                                const ACOParams& params) {
+  if (seed_cost <= 0) return;
+
+  int num_patients = problem.GetNumPatients();
+  int num_days     = problem.GetNumDays();
+  int num_rooms    = problem.GetNumRooms();
+
+  // mismas cotas que en UpdatePheromones para mantener la coherencia MMAS
+  double tau_max = 1.0 / (params.rho * static_cast<double>(seed_cost));
+  double tau_min = tau_max / (2.0 * static_cast<double>(num_patients));
+
+  // todas las posiciones feasibles arrancan en tau_min (el resto sigue en 0.0
+  // tras InitPheromones porque son infeasibles y deben permanecer asi)
+  for (PatientId pid = 0; pid < num_patients; ++pid) {
+    const Patient& p = problem.GetPatient(pid);
+
+    Day release = p.GetSurgeryReleaseDay();
+    Day upper   = p.IsMandatory()
+                  ? std::min(p.GetSurgeryDueDay(), num_days - 1)
+                  : num_days - 1;
+    for (Day d = release; d <= upper && d < num_days; ++d) {
+      double& t = tau_day[pid * num_days + d];
+      if (t > 0.0) t = tau_min;
+    }
+    for (RoomId r = 0; r < num_rooms; ++r) {
+      if (p.IsCompatibleWithRoom(r)) {
+        double& t = tau_room[pid * num_rooms + r];
+        if (t > 0.0) t = tau_min;
+      }
+    }
+  }
+
+  // las decisiones del seed se elevan a tau_max
+  for (PatientId pid : seed.GetScheduledPatients()) {
+    Day    d = seed.GetPatientAdmissionDay(pid);
+    RoomId r = seed.GetPatientRoom(pid);
+    tau_day[pid * num_days + d]   = tau_max;
+    tau_room[pid * num_rooms + r] = tau_max;
+  }
 }

@@ -76,11 +76,13 @@ int main(int argc, char* argv[]) {
   int num_restarts = 100;          // solo en modo random; ACO ignora este parametro
   double global_time_s = 600.0;   // 10 min (requisito de competicion)
   std::string mode = "aco";        // "aco" o "random"
+  int n_ants = -1;                 // <0 = usar default de ACOParams
 
   if (argc < 2) {
     std::cerr << "Uso: " << argv[0]
-              << " <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode]\n";
+              << " <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode] [n_ants]\n";
     std::cerr << "  mode: \"aco\" (default) o \"random\"\n";
+    std::cerr << "  n_ants: hormigas por iteracion (default 12, solo modo aco)\n";
     return 1;
   }
 
@@ -90,6 +92,7 @@ int main(int argc, char* argv[]) {
   if (argc >= 5) num_restarts   = std::atoi(argv[4]);
   if (argc >= 6) global_time_s  = std::atof(argv[5]);
   if (argc >= 7) mode           = argv[6];
+  if (argc >= 8) n_ants         = std::atoi(argv[7]);
 
   std::mt19937 rng(seed);
 
@@ -139,6 +142,8 @@ int main(int argc, char* argv[]) {
   if (mode == "aco") {
     // === Modo ACO: colonia de hormigas + VNS ===
     ACOParams aco_params;  // parametros por defecto
+    if (n_ants > 0) aco_params.n_ants = n_ants;
+    std::cout << "  Hormigas por iteracion: " << aco_params.n_ants << "\n";
     best_solution = ACOSolver::Run(problem, rng, max_iterations,
                                    global_time_s, aco_params);
     if (best_solution.GetNumScheduledPatients() > 0) {
