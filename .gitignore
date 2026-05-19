@@ -52,3 +52,19 @@ logs/
 
 ihtc_demo
 test_parser
+
+# Analizing solutions
+solutions_aco/
+solutions_aco_v1/
+solutions_aco_v3/
+solutions_etapa1/
+solutions_etapa1_600s/
+solutions_etapa1_no_eraco/
+solutions_etapa1_partial/
+solutions_etapa1_seed7/
+solutions_etapa2a/
+solutions_etapa2a_off/
+solutions_etapa3_mvp/
+solutions_etapa3_mvp_seed7/
+solutions_etapa3_v2/
+solutions_etapa3_v2_s7/

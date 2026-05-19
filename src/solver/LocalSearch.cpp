@@ -13,11 +13,13 @@
 #include <algorithm>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <numeric>
 #include <sstream>
 #include <vector>
 
 #include "../evaluator/FeasibilityChecker.h"
+#include "ALNSPerturbation.h"
 #include "RandomGenerator.h"
 
 // ============================================================================
@@ -56,7 +58,8 @@ std::string LocalSearchStats::ToString() const {
 LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
                                   std::mt19937& rng,
                                   double time_limit_seconds,
-                                  uint8_t enabled_mask) {
+                                  uint8_t enabled_mask,
+                                  bool use_alns) {
   LocalSearchStats stats;
   auto start_time = std::chrono::steady_clock::now();
   const ProblemData& prob = solution.GetProblem();
@@ -91,8 +94,16 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
   std::vector<int> order(active.size());
   std::iota(order.begin(), order.end(), 0);
 
-  constexpr int kMaxPerturbations = 15;
+  // Si use_alns: hasta 30 iteraciones de destroy/repair (cada una mas
+  // informativa que un Perturb ciego). Si ILS clasico: 15 (v2).
+  const int kMaxPerturbations = use_alns ? 30 : 15;
   constexpr int kPerturbStrength = 4;
+
+  // Modulo ALNS opcional. Se instancia con el coste inicial para calibrar T_0.
+  std::unique_ptr<ALNSPerturbation> alns;
+  if (use_alns) {
+    alns = std::make_unique<ALNSPerturbation>(prob, current_cost);
+  }
 
   int perturbation_count = 0;
   int iter = 0;
@@ -144,12 +155,22 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
     }
 
     perturbation_count++;
-    solution = best_solution;
-    current_cost = best_cost;
-    Perturb(solution, kPerturbStrength, rng);
-    // Perturb mueve pacientes y puede dejar celdas sin enfermera
-    RandomGenerator::EnsureFullNurseCoverage(solution, prob, rng);
-    current_cost = Evaluator::Evaluate(solution);
+    if (use_alns) {
+      // Etapa 3 — perturbacion ALNS sobre la mejor solucion conocida.
+      // Si Apply rechaza, la solucion queda igual; si acepta, current_cost
+      // se actualiza dentro y la solucion puede haber empeorado (lo permite SA).
+      solution = best_solution;
+      current_cost = best_cost;
+      alns->Apply(solution, current_cost, rng);
+      // Apply ya llama a EnsureFullNurseCoverage en su interior.
+    } else {
+      solution = best_solution;
+      current_cost = best_cost;
+      Perturb(solution, kPerturbStrength, rng);
+      // Perturb mueve pacientes y puede dejar celdas sin enfermera
+      RandomGenerator::EnsureFullNurseCoverage(solution, prob, rng);
+      current_cost = Evaluator::Evaluate(solution);
+    }
   }
 
   // restaurar la mejor solucion (ya tiene cobertura completa por construccion)
@@ -173,7 +194,12 @@ std::vector<PatientId> LocalSearch::GetShuffledScheduled(
   const auto& scheduled = solution.GetScheduledPatients();
   std::vector<PatientId> patients(scheduled.begin(), scheduled.end());
   std::shuffle(patients.begin(), patients.end(), rng);
+  // CAP POTENCIALMENTE PEQUEÑO PARA INSTANCIAS GRANDES
+  // EN LA AUDITORIA SE MARCO COMO PROBLEMA, A PESAR DE USAR SHUFFLE, YA QUE EN 
+  // MUCHAS INSTANCIAS GRANDES LOS OPERADORES SOLO PUEDEN VER UN PEQUEÑO SUBCONJUNTO DE PACIENTES
+  // PROGRAMADOS (LOS PRIMEROS 60 TRAS EL SHUFFLE).
   constexpr int kMaxPatients = 60;
+
   if (static_cast<int>(patients.size()) > kMaxPatients) {
     patients.resize(kMaxPatients);
   }
@@ -578,6 +604,7 @@ bool LocalSearch::TryChangeNurse(Solution& solution, int& current_cost,
   }
   if (positions.empty()) return false;
   std::shuffle(positions.begin(), positions.end(), rng);
+  // CAP POTENCIALMENTE PEQUEÑO PARA INSTANCIAS GRANDES
   constexpr int kMaxPositions = 100;
   if (static_cast<int>(positions.size()) > kMaxPositions) {
     positions.resize(kMaxPositions);
@@ -621,7 +648,7 @@ bool LocalSearch::TryChangeNurse(Solution& solution, int& current_cost,
 }
 
 // ============================================================================
-// Vecindario 8: Reubicacion compuesta (day + room + ot simultaneo)
+// Vecindario 8: Reubicacion compuesta (day + room + ot simultaneo) 2 O 3 CAMBIOS
 // ============================================================================
 
 bool LocalSearch::TryRelocate(Solution& solution, int& current_cost,

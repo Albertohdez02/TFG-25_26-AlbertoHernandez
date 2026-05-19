@@ -50,10 +50,14 @@ class LocalSearch {
   // ejecuta busqueda local ILS sobre la solucion (con time limit en segundos)
   // enabled_mask: bitmask de 8 bits; bit i = 1 activa el operador i.
   //   0xFF = todos activos (comportamiento por defecto)
+  // use_alns: si true, sustituye la perturbacion ILS clasica por una iteracion
+  //   ALNS (destroy/repair + Simulated Annealing acceptance). Default false
+  //   mantiene comportamiento v2 (ILS clasico).
   static LocalSearchStats Run(Solution& solution, int max_iterations,
                               std::mt19937& rng,
                               double time_limit_seconds = 30.0,
-                              uint8_t enabled_mask = 0xFF);
+                              uint8_t enabled_mask = 0xFF,
+                              bool use_alns = false);
 
  private:
   // vecindarios exhaustivos (iteran todos los pacientes, first-improvement)

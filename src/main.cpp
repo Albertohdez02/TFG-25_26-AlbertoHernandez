@@ -77,12 +77,14 @@ int main(int argc, char* argv[]) {
   double global_time_s = 600.0;   // 10 min (requisito de competicion)
   std::string mode = "aco";        // "aco" o "random"
   int n_ants = -1;                 // <0 = usar default de ACOParams
+  std::string perturb_kind = "ils"; // "ils" (default) o "alns" (Etapa 3)
 
   if (argc < 2) {
     std::cerr << "Uso: " << argv[0]
-              << " <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode] [n_ants]\n";
+              << " <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode] [n_ants] [perturb]\n";
     std::cerr << "  mode: \"aco\" (default) o \"random\"\n";
     std::cerr << "  n_ants: hormigas por iteracion (default 12, solo modo aco)\n";
+    std::cerr << "  perturb: \"ils\" (default) o \"alns\" (Etapa 3, destroy/repair + SA)\n";
     return 1;
   }
 
@@ -93,6 +95,7 @@ int main(int argc, char* argv[]) {
   if (argc >= 6) global_time_s  = std::atof(argv[5]);
   if (argc >= 7) mode           = argv[6];
   if (argc >= 8) n_ants         = std::atoi(argv[7]);
+  if (argc >= 9) perturb_kind   = argv[8];
 
   std::mt19937 rng(seed);
 
@@ -143,7 +146,10 @@ int main(int argc, char* argv[]) {
     // === Modo ACO: colonia de hormigas + VNS ===
     ACOParams aco_params;  // parametros por defecto
     if (n_ants > 0) aco_params.n_ants = n_ants;
+    aco_params.use_alns = (perturb_kind == "alns");
     std::cout << "  Hormigas por iteracion: " << aco_params.n_ants << "\n";
+    std::cout << "  Perturbacion: "
+              << (aco_params.use_alns ? "ALNS+SA" : "ILS clasico") << "\n";
     best_solution = ACOSolver::Run(problem, rng, max_iterations,
                                    global_time_s, aco_params);
     if (best_solution.GetNumScheduledPatients() > 0) {

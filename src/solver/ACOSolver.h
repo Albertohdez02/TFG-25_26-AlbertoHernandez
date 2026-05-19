@@ -40,6 +40,7 @@ struct ACOParams {
   double tau_init     = 1.0;  // feromona inicial para posiciones feasibles
   int    stagnation_k = 15;   // iteraciones sin mejora global antes de reinicializar
   int    pool_size    = 4;    // hilos paralelos por iteracion (regla IHTC: max 4)
+  bool   use_alns     = false;// si true, usa ALNS+SA en lugar del ILS clasico
 };
 
 class ACOSolver {

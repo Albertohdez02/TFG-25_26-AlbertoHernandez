@@ -15,10 +15,9 @@
 //   HC8: Quirofano abierto el dia de cirugia (availability > 0)
 //   HC9: Maximo una enfermera por (habitacion, dia, turno) [implicito en Solution]
 //   HC10: Enfermera disponible en el (dia, turno) asignado
-//   HC11: (desactivada en esta rama) una enfermera puede cubrir varias habitaciones
-//   HC12: Carga cirujano <= max_surgery_time en cada dia
-//   HC13: Carga quirofano <= availability en cada dia
-//   HC14: Toda (habitacion, dia, turno) con pacientes/ocupantes tiene enfermera
+//   HC11: Carga cirujano <= max_surgery_time en cada dia
+//   HC12: Carga quirofano <= availability en cada dia
+//   HC13: Toda (habitacion, dia, turno) con pacientes/ocupantes tiene enfermera
 //         (analogo a UncoveredRoom del validador oficial IHTC)
 
 #ifndef SRC_EVALUATOR_FEASIBILITY_CHECKER_H_

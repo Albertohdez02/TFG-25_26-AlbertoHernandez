@@ -756,3 +756,305 @@ Se actualizan los checks de §13: las tres mejoras propuestas están implementad
 | [graficas_v2/](../graficas_v2/) | Figuras nuevas (5 PNG + comparison_summary.csv) |
 | [scripts/plot_comparison_v2.py](../scripts/plot_comparison_v2.py) | Script ajustado: lee `solutions_aco/`, escribe en `graficas_v2/` |
 | [logs/comparison_v2/](../logs/comparison_v2/) | Logs por instancia + `_progress.csv` |
+
+---
+
+## 15. Sesión 2026-05-08 — Etapa 1 (Quick wins) — implementada y revertida
+
+Se intentó la Etapa 1 propuesta en [ACO-limitation-research.md §4](../ACO-limitation-research.md): cuatro mejoras "quick wins" sin cambiar la arquitectura, para subir la cobertura de los vecindarios y diversificar la regla ACS. Resultado neto: **regresión sistemática** a iso-tiempo. Etapa revertida tras los experimentos. Los aprendizajes se reportan completos para guiar la siguiente etapa.
+
+### 15.1 Cambios aplicados (en orden)
+
+1. **Límites VNS escalables con √P** en [src/solver/LocalSearch.cpp](../src/solver/LocalSearch.cpp):
+   - `GetShuffledScheduled` cap: `max(60, ceil(√P × 5))`. Para P=500 ⇒ 112 vs 60 anterior.
+   - `kMaxPairs` (SwapRooms/SwapDays): `min(max(200, 2·n), C(n,2))`.
+   - `kMaxPositions` (ChangeNurse): `max(100, ceil(0.3 × |posiciones|))`.
+   - `kMaxCombos` (Relocate): `min(60, |days|·|rooms|)`.
+2. **Perturbación adaptativa**: `strength = max(4, round(√P × 0.3))`. P=500 ⇒ 7 vs 4.
+3. **ToggleOptional completa**: para cada opcional, probar todos los `(d, r, ot)` factibles hasta mejora estricta (no descartar tras el primer intento). Tope global por llamada `min(500, max(100, 5·|opt|))`.
+4. **ER-ACO schedule** en [src/solver/ACOSolver.cpp](../src/solver/ACOSolver.cpp): `q0(t) = q0_max − (q0_max − q0_min) × exp(−λ·t/T)` con `q0_min=0.5, q0_max=params.q0=0.95, λ=4`. Exploración temprana (q0 bajo), explotación tardía (q0 alto). Aplicado por iteración del bucle externo, propagado al `ConstructSolution` vía copia local de `ACOParams`.
+
+### 15.2 Resultados — mini-benchmark a 600 s (semilla 42, 4 hilos paralelos)
+
+Comparación contra el ACO v2 (post-Fases A+B+C+D):
+
+| Instancia | v2 (600 s) | Etapa 1 completa | Etapa 1 sin ER-ACO | Etapa 1 sin VNS-scaling |
+|---|---:|---:|---:|---:|
+| i04 | 4 658 | 4 881 (**+4.8 %**) | 4 815 (+3.4 %) | 5 029 (+8.0 %) |
+| i17 | 65 765 | 67 830 (**+3.1 %**) | 67 600 (+2.8 %) | 69 570 (+5.8 %) |
+| i26 | 103 732 | 105 853 (**+2.0 %**) | 105 663 (+1.9 %) | 105 345 (+1.6 %) |
+
+Las tres variantes están sistemáticamente **peor** que v2. La regresión está fuera del rango de varianza inter-seed (medido aparte: ±3-6 %, similar al efecto observado).
+
+Test cruzado seed=7 (300 s) para verificar varianza:
+
+| Instancia | seed=42 (300 s) | seed=7 (300 s) | varianza |
+|---|---:|---:|---:|
+| i04 | 4 876 | 5 175 | ±6.1 % |
+| i17 | 69 530 | 66 975 | ±3.7 % |
+| i26 | 106 258 | 106 982 | ±0.7 % |
+
+La regresión a 600 s se mantiene incluso considerando varianza.
+
+### 15.3 Análisis de la causa
+
+La hipótesis del plan era que **subir los límites de exploración mejora porque cubre más vecindario**. Lo que muestra el experimento es que en realidad, a iso-tiempo:
+
+- Cada iteración VNS más profunda **gasta más segundos por aceptación**. Con 4 hilos y 12 hormigas, cada batch ACO dura más → menos batches en 600 s → menos actualizaciones de feromona → la colonia aprende menos.
+- La perturbación más agresiva **destruye más estructura** que la VNS recupera en su tiempo asignado: la perturbación de strength 7 mueve el doble de pacientes que strength 4, pero la VNS no tiene el doble de tiempo para repararlo.
+- ToggleOptional completa hace muchas más evaluaciones por llamada (hasta 500), gasto que no se traduce proporcionalmente en mejoras.
+- ER-ACO con `q0_min=0.5` al inicio destruye la calidad de las primeras hormigas: el warm-start ya es muy bueno, las hormigas iniciales con q0 bajo exploran ruleta y no superan al seed → la feromona aprende solo del seed → las hormigas siguientes con q0 ya creciente repiten variantes del seed.
+
+Resumen: **las mejoras de Etapa 1 amplían el espacio explorado pero no aprovechan el presupuesto computacional fijo**. Solo serían beneficiosas con presupuestos mucho mayores (varios miles de segundos), donde la VNS tiene tiempo de explotar el vecindario ampliado.
+
+### 15.4 Decisión
+
+Tras los experimentos, **se revierten todos los cambios** dejando el solver en estado v2 limpio (`git diff` vacío). Las opciones plausibles para la siguiente sesión son:
+
+- **(Recomendado)** Saltar a **Etapa 2** del plan: añadir operadores cluster (`SurgeonConsolidation`, `OTShifting`, `NurseSwap`, `DayBlock`). Estos NO amplían el espacio explorado en regiones ya cubiertas, sino que abren regiones hoy invisibles a los movimientos individuales. Es un cambio **cualitativo** del vecindario, no cuantitativo.
+- Re-intentar Etapa 1 con presupuestos mucho mayores (1800 s+) — coste experimental alto y poca relación con la regla del concurso.
+- Re-calibrar Etapa 1 con valores mucho más conservadores (e.g., `kMaxPairs=300`, `strength=5`, `q0_min=0.85`, `λ=8`) — mejora marginal esperada, no merece la pena antes de Etapa 2.
+
+### 15.5 Ficheros modificados (todos revertidos)
+
+| Fichero | Estado |
+|---|---|
+| `src/solver/LocalSearch.cpp` | Revertido (idéntico a v2) |
+| `src/solver/ACOSolver.cpp` | Revertido (idéntico a v2) |
+
+Logs y soluciones experimentales preservadas para análisis posterior:
+
+| Path | Descripción |
+|---|---|
+| `logs/etapa1/`, `logs/etapa1_seed7/`, `logs/etapa1_600s/`, `logs/etapa1_no_eraco/`, `logs/etapa1_partial/` | Logs por experimento |
+| `solutions_etapa1/`, `solutions_etapa1_seed7/`, `solutions_etapa1_600s/`, `solutions_etapa1_no_eraco/`, `solutions_etapa1_partial/` | Soluciones generadas |
+
+### 15.6 Implicación para la hoja de ruta
+
+[ACO-limitation-research.md](../ACO-limitation-research.md) §4 estimaba que Etapa 1 daría -8 a -12 puntos de gap. La evidencia empírica refuta esa estimación. Se ha actualizado el documento de research con los hallazgos y la nueva proyección esperada para Etapa 2 (operadores cluster), que ahora es la principal apuesta para acercarse al gap objetivo de Etapa 3 (~22-29 %).
+
+---
+
+## 16. Sesión 2026-05-08 — Etapa 2 (operadores cluster) — abandonada con hallazgo crítico
+
+Se intentó la primera sub-fase de Etapa 2: añadir `TrySurgeonConsolidation` como 9.º operador VNS, refactorizando el bitmask de `uint8_t` a `uint16_t` y los arrays de `8` a `kNumOperators` constexpr. El operador, propuesto en [ACO-limitation-research.md §4 Etapa 2](../ACO-limitation-research.md), busca mover hasta 3 pacientes del mismo cirujano del día más sobrecargado al de mayor slack en bloque atómico. Implementado limpio, compila sin avisos.
+
+### 16.1 Diagnóstico instrumentado
+
+Se añadió un contador atómico `op_total_improvements[kNumOperators]` en `ACOSolver::Run` que agrega las `op_improvements` de todas las hormigas y se imprime al final. Resultado en i17 con 300 s, 12 hormigas, 4 hilos, semilla 42:
+
+```
+Mejoras por operador (agregado todas las hormigas):
+  ChangeRoom : 855  (23.3 %)
+  ChangeDay  : 643  (17.5 %)
+  ChangeOT   : 1101 (30.0 %)
+  Relocate   : 295  ( 8.0 %)
+  SwapRooms  : 321  ( 8.8 %)
+  SwapDays   :  76  ( 2.1 %)
+  ToggleOpt  : 374  (10.2 %)
+  ChangeNurse:   0  ( 0.0 %)
+  SurgeonCons:   0  ( 0.0 %)
+```
+
+**SurgeonCons no produjo ni una sola mejora** en ~120 ejecuciones de `LocalSearch::Run`. Mini-benchmark a 600 s confirmó regresión sistemática vs v2: i04 +2.2 %, i17 +4.9 %, i26 +2.7 %. La causa de la regresión es doble: (1) el operador, aunque devuelva `false` rápido, gasta tiempo recorriendo cirujanos y (2) ocupa un slot del shuffle order, restando turno a operadores productivos como ChangeOT.
+
+### 16.2 Hallazgo crítico — los operadores cluster son ciegos bajo first-improvement
+
+El experimento revela una limitación fundamental del framework VNS actual que la auditoría de §1.3 no anticipó:
+
+> **Cualquier operador cluster que mueva múltiples pacientes simultáneamente bajo `first-improvement` de coste TOTAL solo puede aceptar movimientos donde la suma agregada baja en términos absolutos.**
+>
+> **Si moviendo 1 paciente individual ya sería mejora, los operadores individuales (ChangeDay, ChangeOT) ya la habrán hecho** antes de que el operador cluster tenga turno.
+>
+> **Si la mejora agregada cluster requiere pasar por estados intermedios donde algún componente empeora**, la VNS individual NO la encuentra (porque mover 1 empeora). El operador cluster sí podría encontrarla, pero solo si el saldo TOTAL es positivo. En la práctica, mover 2-3 pacientes del cirujano `s` del día `d_alto` al `d_bajo` reduce `surgeon_overtime` pero suele aumentar `patient_delay`, `room_capacity` o `surgeon_transfer` — el saldo neto rara vez es estrictamente positivo.
+
+Esto explica por qué `SurgeonCons` registra **cero mejoras**: las únicas combinaciones donde funcionaría requieren acceptance criterion no estricto, y la VNS de la implementación actual no lo permite.
+
+### 16.3 Consecuencia para Etapas 2.b–2.d
+
+Si el patrón se confirma para los demás operadores cluster propuestos, **ninguno aportará bajo first-improvement de coste total**:
+
+| Operador | Por qué probablemente fallará igual |
+|---|---|
+| `TryOTShifting` | Mover N pacientes de OT_a→OT_b tiene mismo trade-off entre `open_ot` (mejora) y otros (empeoran). ChangeOT individual ya cubre las mejoras estrictamente positivas. |
+| `TryDayBlock` | Bloque (sala, día) → otra sala. Si ya cabe sin perder coste, ChangeRoom individual lo hace. |
+| `TryNurseSwap` | Intercambiar enfermeras de turnos del mismo día. ChangeNurse ya prueba reasignaciones individuales y no encuentra mejoras (0 % en el log). El intercambio agregado tiene la misma limitación. |
+
+La auditoría asumía que los operadores cluster atacaban "vecindarios ciegos" en sentido geométrico (movimientos no representables). En realidad **sí son representables**, lo que es ciego es el **acceptance criterion**: la VNS rechaza degradaciones intermedias.
+
+### 16.4 Decisión — saltar a Etapa 3 (ALNS+SA)
+
+Implicación inmediata para la hoja de ruta:
+
+- **Abandonar Etapa 2.** Ningún operador cluster va a aportar dentro del marco VNS+ILS actual. Continuar implementándolos solo introduciría más regresión.
+- **Saltar directo a Etapa 3 (módulo ALNS).** El ALNS canónico de Lusby et al. usa **Simulated Annealing como acceptance criterion**, lo que permite aceptar movimientos `Δcost > 0` con probabilidad `exp(−Δcost / T)`. Esto es **exactamente** lo que falta hoy: una vía para aceptar degradaciones intermedias y desbloquear las regiones del espacio de búsqueda hoy invisibles.
+- Los operadores cluster (SurgeonRemoval, DayRemoval, etc.) deben implementarse **dentro del módulo ALNS**, no en la VNS. El destroy-repair sobre clusters de 5-15 pacientes con SA acceptance es donde la palanca real está según la literatura ([ACO-limitation-research.md §2.3](../ACO-limitation-research.md)).
+- Las "Etapas 2.b–2.d" del plan original quedan **subsumidas en Etapa 3** con otra forma: como destroy operators, no como vecindarios VNS. La estructura del plan se simplifica.
+
+### 16.5 Ficheros modificados (todos revertidos)
+
+| Fichero | Estado |
+|---|---|
+| `src/solver/LocalSearch.h` | Revertido a v2 (8 operadores, uint8_t mask) |
+| `src/solver/LocalSearch.cpp` | Revertido a v2 |
+| `src/solver/ACOSolver.cpp` | Revertido a v2 (eliminado contador atómico de diagnóstico) |
+| `src/ablation_test.cpp` | Revertido a v2 |
+
+`git diff --stat src/` vacío. Logs y soluciones experimentales preservadas en `logs/etapa2a/` y `solutions_etapa2a/` para análisis posterior.
+
+### 16.6 Insights consolidados para el plan de Etapa 3
+
+A partir de los datos del diagnóstico, refinamos las prioridades de Etapa 3:
+
+1. **ChangeOT y ChangeRoom dominan las mejoras** (53 % combinado) — son el núcleo productivo de la VNS actual. ALNS debe **complementarlos**, no reemplazarlos.
+2. **ChangeNurse aporta 0 %** consistentemente (también lo veía el ablation original §4.3). Es candidato a desactivar permanentemente — libera un slot del shuffle. Validar antes en otra instancia.
+3. **SwapDays solo 2.1 %** — operador débil; muchos pares se prueban para pocas mejoras. Considerar reducir su frecuencia en el shuffle (o moverlo dentro de ALNS como destroy/repair).
+4. La distribución sugiere que el ALNS debería tener **destroy operators dirigidos a (cirujano, día) y (OT, día)** — exactamente las dimensiones donde ChangeOT+ChangeDay ya producen mejoras pero no en bloque.
+5. La **acceptance SA** es el cambio crítico, no los operadores nuevos. Sin acceptance no estricta, los operadores cluster son inútiles.
+
+---
+
+## 17. Sesión 2026-05-09 — Etapa 3 (ALNS+SA): MVP, ampliación, benchmark completo
+
+Se implementa la **Etapa 3** del plan de [ACO-limitation-research.md §4](../ACO-limitation-research.md): un módulo ALNS (Adaptive Large Neighborhood Search) con **Simulated Annealing acceptance** que sustituye la perturbación ILS clásica de [LocalSearch::Run](../src/solver/LocalSearch.cpp). Aprendiendo de las regresiones de Etapas 1 y 2, se siguió un enfoque **incremental**: MVP estricto → ampliación dirigida → benchmark completo, con decisión de parar/continuar tras cada hito.
+
+### 17.1 Diseño del MVP
+
+Nuevo módulo `src/solver/ALNSPerturbation.{h,cpp}` con:
+
+- **`ALNSParams`**: `initial_temp_factor=0.05` (T₀ = 5% del coste inicial), `cooling_rate=0.998` (decay por Apply), `min_temp=0.5` (suelo), `destroy_factor=0.5` (k = √P × 0.5 acotado [4, 30]).
+- **`ALNSPerturbation::Apply`**: snapshot completo de la solución → destroy → repair → cobertura de enfermeras → SA-acceptance. Si rechaza, restaura el snapshot.
+- **MVP destroy**: solo `RandomRemoval(k)`. **Repair**: re-asignación greedy con `RandomGenerator::TryAssignPatientFeasibly` (con `ForceAssignMandatory` como fallback para obligatorios).
+- **SA-acceptance**: `Δcost ≤ 0` siempre acepta; `Δcost > 0` acepta con probabilidad `exp(−Δcost / T)`. Cool-down geométrico tras cada Apply.
+
+**Integración** ([LocalSearch::Run](../src/solver/LocalSearch.cpp)): nuevo parámetro opcional `bool use_alns = false`. Cuando es true, sustituye el bloque `Perturb(strength=4)` por `alns->Apply(...)`. `kMaxPerturbations` sube de 15 a 30 (cada Apply es más informativo). El ILS clásico se conserva exactamente como en v2 cuando `use_alns=false` — retrocompatibilidad total.
+
+**Propagación**: `ACOParams::use_alns` (default false) controla el flag desde `main.cpp`. Nuevo argumento CLI 8º: `perturb` ∈ {`ils`, `alns`}, default `ils`.
+
+### 17.2 MVP — mini-benchmark (i04, i08, i17, i26)
+
+| Instancia | seed=42 vs v2 | seed=7 vs v2 | Promedio |
+|---|---:|---:|---:|
+| i04 | +3.65 % | −3.46 % | +0.10 % |
+| i08 | +1.45 % | — | +1.45 % |
+| i17 | −0.41 % | −0.81 % | −0.61 % |
+| i26 | −0.61 % | −1.81 % | −1.21 % |
+
+ALNS MVP **mejora ligeramente** en instancias grandes (i17, i26), neutral en pequeñas (i04, i08). La varianza inter-seed (~5-6 %) domina el efecto. Decisión: ampliar con destroy operators dirigidos antes de descartar.
+
+### 17.3 Ampliación — ALNS+ con 3 destroy operators
+
+Añadidos `SurgeonRemoval` y `DayRemoval` a `ALNSPerturbation`:
+
+- **`SurgeonRemoval`**: identifica cirujanos con overtime, muestrea uno por probabilidad ∝ overtime, retira todos sus pacientes (acotado por `k_cap`). Si ningún cirujano tiene overtime, fallback a `RandomRemoval`.
+- **`DayRemoval`**: muestrea día por probabilidad ∝ número de pacientes admitidos, retira hasta `k_cap` de ese día.
+
+En cada `Apply`, elige uniformemente entre los 3 destroys. Sin adaptive weights aún (se añaden si el experimento confirma palanca).
+
+**Mini-benchmark ALNS+ (3 destroys):**
+
+| Instancia | seed=42 | seed=7 |
+|---|---:|---:|
+| i04 | +4.81 % | −5.24 % |
+| i08 | +2.97 % | — |
+| i17 | −0.19 % | −0.05 % |
+| i26 | −0.66 % | −2.66 % |
+
+Resultado **muy similar al MVP solo con RandomRemoval**. El destroy dirigido no añade valor visible. Hipótesis: (a) k = √P × 0.5 muy conservador (P=500 → solo 12 pacientes ≈ 2.4 %); (b) GreedyRepair re-asigna en posiciones casi idénticas; (c) cooling 0.998 → T casi constante → SA acepta casi todo, tasa de aceptación demasiado alta.
+
+Decisión metódica: **lanzar benchmark completo i01–i30 con ALNS+** (semilla 42). 30 instancias compensan la varianza por número de muestras. Si el agregado mejora consistentemente → Etapa 3a OK; replantear Etapa 3b. Si no → diagnóstico profundo.
+
+### 17.4 Benchmark completo i01–i30 (600 s, semilla 42)
+
+Mismo setup que v2: 30 instancias × 600 s × 4 hilos por solver, 5 instancias en paralelo (20 cores), wall-clock ~60 min. Datos en [tables/aco-random-comparison-v3.csv](../tables/aco-random-comparison-v3.csv); figuras en [graficas_v3/](../graficas_v3/).
+
+**Resultados agregados (validador oficial IHTC):**
+
+| Métrica | v1 (pre-mejoras) | v2 (Fases A+B+C+D) | **v3 (ALNS+SA)** | Best (oficial) |
+|---|---:|---:|---:|---:|
+| Coste agregado i01–i30 | 1 119 248 | 1 080 218 | **1 069 872** | 716 560 |
+| Gap medio vs best | +56.4 % | +52.5 % | **+52.0 %** | — |
+| Mediana gap vs best | — | +49.7 % | **+49.4 %** | — |
+| ACO gana a Random | 24/30 | 27/30 | **25/30** | — |
+| Soluciones factibles | 30/30 | 30/30 | **30/30** | — |
+
+**Mejora v2 → v3**: −10 346 puntos absolutos (**−0.96 %**). **Gap medio cae 0.53 pp**. 20/30 instancias mejoran respecto a v2; 10/30 empeoran.
+
+**Top mejoras v3 vs v2:**
+
+| Instancia | v2 | v3 | Δ % |
+|---|---:|---:|---:|
+| i27 | 97 948 | 92 631 | **−5.43 %** |
+| i05 | 15 904 | 15 396 | −3.19 % |
+| i03 | 11 150 | 10 860 | −2.60 % |
+| i11 | 29 900 | 29 125 | −2.59 % |
+| i15 | 20 280 | 19 762 | −2.55 % |
+| i24 | 42 477 | 41 397 | −2.54 % |
+| i22 | 85 405 | 83 617 | −2.09 % |
+| i13 | 23 856 | 23 362 | −2.07 % |
+
+**Empeoramientos v3 vs v2:**
+
+| Instancia | v2 | v3 | Δ % |
+|---|---:|---:|---:|
+| i04 | 4 658 | 4 882 | +4.81 % |
+| i01 | 4 330 | 4 465 | +3.12 % |
+| i08 | 16 877 | 17 378 | +2.97 % |
+| i19 | 79 081 | 80 363 | +1.62 % |
+| i25 | 16 722 | 16 970 | +1.48 % |
+
+### 17.5 Lectura de los resultados
+
+**Patrón claro:**
+
+- ALNS+SA aporta más en instancias **medianas y grandes** (i05, i11, i13, i15, i17, i22, i24, i27 con mejoras 2-5 %).
+- En instancias **pequeñas o ya saturadas** (i01, i04, i08, i19, i25) introduce más ruido del que recupera.
+- El SA, con cooling 0.998 sobre 30 perturbaciones, mantiene T cerca del inicial — acepta demasiado. Esto explica por qué ayuda en grandes (donde se necesita escapar de óptimos locales) y daña en pequeñas (donde el óptimo local ya estaba bien).
+
+**i08 sigue patológica:** v1 = 13 199, v2 = 16 877, v3 = 17 378. Mientras Random saca 13 199 (mejor que ACO de cualquier versión), el ACO no encuentra esa cuenca. La feromona se está sesgando a un atractor diferente — fenómeno consistente con la auditoría §1.4 sobre la factorización marginal de τ.
+
+**Comparación con la proyección de [ACO-limitation-research.md §4](../ACO-limitation-research.md):**
+
+- Plan original Etapa 3: gap esperado **22-29 %**.
+- Resultado real: **52 %**.
+- Diferencia: el plan asumía que el ALNS+SA generaba un salto cualitativo. La realidad es que solo añade −0.5 pp de gap.
+
+La hipótesis de "el SA-acceptance es la palanca clave" se valida solo parcialmente: sí cambia el comportamiento (acepta degradaciones, escapa óptimos locales), pero no en la magnitud esperada. La **factorización marginal de la feromona** y la **heurística η pobre** (Etapas 4-5) parecen ser el cuello de botella mayor.
+
+### 17.6 Análisis: ¿por qué el ALNS no genera el salto esperado?
+
+Hipótesis a profundizar tras los datos del benchmark:
+
+1. **GreedyRepair es demasiado conservador**: re-asigna por orden de obligatoriedad/slack y aleatorio, sin sesgar por feromona ni por `Δcost` mínimo. Un `RegretKInsertion` o un `ACOGuidedInsertion` puede dar más palanca.
+2. **Tasa de aceptación SA muy alta**: cooling 0.998 sobre 30 Apply → T_final ≈ T_inicial × 0.94. Casi todo se acepta. Eso desorienta la búsqueda en lugar de dirigirla. Un `cooling_rate=0.93` daría T_final ≈ 12 % de T_inicial — schedule realista.
+3. **k = √P × 0.5 muy bajo en grandes**: para P=500, k=11. Removemos 2.4 % de pacientes. La literatura ALNS típica usa 10-30 % (k=50-150 para P=500). Con k tan bajo, el destroy es esencialmente equivalente a una micro-perturbación.
+4. **Sin adaptive weights**: los 3 destroys se eligen uniformemente; un destroy peor se ejecuta tantas veces como el mejor. Adaptive weights con roulette priorizarían los más útiles.
+5. **Sin diversificación tras estancamiento**: si ALNS no mejora durante muchas Apply, no hay reset. Un mecanismo de "kick the can" cuando se detecta estancamiento (e.g., ralentizar T fija a un valor alto durante 3 Apply) podría ayudar.
+
+### 17.7 Decisión y siguiente paso
+
+El benchmark v3 es **una mejora marginal pero consistente** sobre v2. Las cifras quedan lejos del objetivo de la hoja de ruta. Tres caminos viables:
+
+1. **Etapa 3b — Recalibración del ALNS** (1-2 días): subir `destroy_factor` a 1.0-1.5, bajar `cooling_rate` a 0.93, añadir `RegretKInsertion`, añadir adaptive weights con roulette. Ganancia esperada: −2 a −5 pp adicionales.
+2. **Etapa 4 — ACO informado** (2-3 días, según plan original): η dinámica con surgeon_load/ot_load/room_state, candidate lists, q0 heterogéneo, soft-reset por edad de global_best. Ataca la **causa raíz** identificada en la auditoría §1.4 (η pobre, τ marginal). Ganancia esperada por el plan: −3 a −6 pp.
+3. **Mantener v3 como estado actual** y pasar al análisis estadístico/redacción.
+
+Recomendación: **Etapa 3b primero** (recalibración barata) y luego Etapa 4 (cambio cualitativo). Aplicarlas en este orden porque la 3b mejora el módulo ALNS recién implementado mientras la lógica está fresca, y la 4 ataca componentes ortogonales (la construcción ACO).
+
+### 17.8 Ficheros nuevos / modificados
+
+| Path | Acción |
+|---|---|
+| [src/solver/ALNSPerturbation.h](../src/solver/ALNSPerturbation.h) | **Nuevo**: header del módulo ALNS+SA |
+| [src/solver/ALNSPerturbation.cpp](../src/solver/ALNSPerturbation.cpp) | **Nuevo**: 3 destroy ops + GreedyRepair + SA-accept |
+| [src/solver/LocalSearch.h](../src/solver/LocalSearch.h) | Añadido parámetro `bool use_alns = false` a `Run` |
+| [src/solver/LocalSearch.cpp](../src/solver/LocalSearch.cpp) | Bloque ILS clásico vs ALNS según `use_alns` |
+| [src/solver/ACOSolver.h](../src/solver/ACOSolver.h) | Añadido `bool use_alns = false` a `ACOParams` |
+| [src/solver/ACOSolver.cpp](../src/solver/ACOSolver.cpp) | Propaga `params.use_alns` a `LocalSearch::Run` (warm-start y hormigas paralelas) |
+| [src/main.cpp](../src/main.cpp) | 8º argumento CLI: `perturb` ∈ {ils, alns} |
+| [CMakeLists.txt](../CMakeLists.txt) | Añadido `ALNSPerturbation.cpp` a `SOLVER_SOURCES` |
+| [scripts/plot_comparison_v3.py](../scripts/plot_comparison_v3.py) | Lee `solutions_aco_v3/`, escribe en `graficas_v3/` |
+| [solutions_aco_v3/](../solutions_aco_v3/) | 30 soluciones ALNS+SA (semilla 42, 600 s) |
+| [tables/aco-random-comparison-v3.csv](../tables/aco-random-comparison-v3.csv) | Tabla con costes y gaps de v3 |
+| [graficas_v3/](../graficas_v3/) | 5 PNG + comparison_summary.csv |
+| [logs/comparison_v3/](../logs/comparison_v3/) | Logs por instancia + `_progress.csv` |

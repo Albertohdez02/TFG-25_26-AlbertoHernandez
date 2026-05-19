@@ -71,7 +71,8 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
   if (warm_budget >= 1.0 && remaining_s() > warm_budget + 5.0) {
     std::mt19937 seed_rng(rng());
     Solution seed = RandomGenerator::Generate(problem, seed_rng);
-    LocalSearch::Run(seed, max_ls_iter, seed_rng, warm_budget);
+    LocalSearch::Run(seed, max_ls_iter, seed_rng, warm_budget,
+                     /*enabled_mask=*/0xFF, params.use_alns);
     if (FeasibilityChecker::Check(seed).feasible) {
       int seed_cost = Evaluator::Evaluate(seed);
       if (seed_cost > 0) {
@@ -129,8 +130,9 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
                                                  eta_day, eta_room,
                                                  problem, params, local_rng);
           // 2. mejora con VNS (tiempo fijo por batch)
-          LocalSearchStats st = LocalSearch::Run(candidate, max_ls_iter,
-                                                 local_rng, batch_ls_time);
+          LocalSearchStats st = LocalSearch::Run(
+              candidate, max_ls_iter, local_rng, batch_ls_time,
+              /*enabled_mask=*/0xFF, params.use_alns);
           results[k].solution = std::move(candidate);
           results[k].cost     = st.final_cost;
           results[k].valid    = true;
