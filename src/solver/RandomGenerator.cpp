@@ -141,14 +141,17 @@ void RandomGenerator::GenerateNurseAssignments(Solution& solution,
 
           // penalizar skill insuficiente
           for (PatientId pid : room_patients) {
-            SkillLevel req = problem.GetPatient(pid).GetSkillLevelForShift(s);
+            Day adm = solution.GetPatientAdmissionDay(pid);
+            int day_in_stay = d - adm;
+            SkillLevel req =
+                problem.GetPatient(pid).GetSkillLevelAt(day_in_stay, s);
             if (nurse_skill < req) {
               score += 100;
             }
           }
           for (const auto& occ : problem.GetOccupants()) {
             if (occ.GetRoomId() == r && occ.IsPresentOnDay(d)) {
-              SkillLevel req = occ.GetSkillLevelForShift(s);
+              SkillLevel req = occ.GetSkillLevelAt(d, s);
               if (nurse_skill < req) {
                 score += 100;
               }
@@ -160,12 +163,14 @@ void RandomGenerator::GenerateNurseAssignments(Solution& solution,
           int current_workload = solution.GetNurseWorkload(n, d, s);
           int added_workload = 0;
           for (PatientId pid : room_patients) {
+            Day adm = solution.GetPatientAdmissionDay(pid);
+            int day_in_stay = d - adm;
             added_workload +=
-                problem.GetPatient(pid).GetWorkloadForShift(s);
+                problem.GetPatient(pid).GetWorkloadAt(day_in_stay, s);
           }
           for (const auto& occ : problem.GetOccupants()) {
             if (occ.GetRoomId() == r && occ.IsPresentOnDay(d)) {
-              added_workload += occ.GetWorkloadForShift(s);
+              added_workload += occ.GetWorkloadAt(d, s);
             }
           }
           if (current_workload + added_workload > max_load) {
@@ -235,12 +240,15 @@ void RandomGenerator::EnsureFullNurseCoverage(Solution& solution,
           SkillLevel nurse_skill = problem.GetNurse(n).GetSkillLevel();
 
           for (PatientId pid : room_patients) {
-            SkillLevel req = problem.GetPatient(pid).GetSkillLevelForShift(s);
+            Day adm = solution.GetPatientAdmissionDay(pid);
+            int day_in_stay = d - adm;
+            SkillLevel req =
+                problem.GetPatient(pid).GetSkillLevelAt(day_in_stay, s);
             if (nurse_skill < req) score += 100;
           }
           for (const auto& occ : problem.GetOccupants()) {
             if (occ.GetRoomId() == r && occ.IsPresentOnDay(d)) {
-              SkillLevel req = occ.GetSkillLevelForShift(s);
+              SkillLevel req = occ.GetSkillLevelAt(d, s);
               if (nurse_skill < req) score += 100;
             }
           }
@@ -249,11 +257,14 @@ void RandomGenerator::EnsureFullNurseCoverage(Solution& solution,
           int current_workload = solution.GetNurseWorkload(n, d, s);
           int added_workload = 0;
           for (PatientId pid : room_patients) {
-            added_workload += problem.GetPatient(pid).GetWorkloadForShift(s);
+            Day adm = solution.GetPatientAdmissionDay(pid);
+            int day_in_stay = d - adm;
+            added_workload +=
+                problem.GetPatient(pid).GetWorkloadAt(day_in_stay, s);
           }
           for (const auto& occ : problem.GetOccupants()) {
             if (occ.GetRoomId() == r && occ.IsPresentOnDay(d)) {
-              added_workload += occ.GetWorkloadForShift(s);
+              added_workload += occ.GetWorkloadAt(d, s);
             }
           }
           if (current_workload + added_workload > max_load) {

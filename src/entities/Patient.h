@@ -55,9 +55,16 @@ class Patient {
     return workload_produced_;
   }
 
-  [[nodiscard]] int GetWorkloadForShift(Shift shift) const noexcept {
-    return (shift >= 0 && shift < static_cast<int>(workload_produced_.size()))
-               ? workload_produced_[shift]
+  // carga producida en el (dia-de-estancia, turno).
+  // workload_produced_ tiene length_of_stay * shifts_per_day entradas.
+  [[nodiscard]] int GetWorkloadAt(int day_in_stay,
+                                  Shift shift) const noexcept {
+    if (length_of_stay_ <= 0) return 0;
+    int shifts_per_day =
+        static_cast<int>(workload_produced_.size()) / length_of_stay_;
+    int idx = day_in_stay * shifts_per_day + shift;
+    return (idx >= 0 && idx < static_cast<int>(workload_produced_.size()))
+               ? workload_produced_[idx]
                : 0;
   }
 
@@ -65,10 +72,16 @@ class Patient {
     return skill_level_required_;
   }
 
-  [[nodiscard]] SkillLevel GetSkillLevelForShift(Shift shift) const noexcept {
-    return (shift >= 0 &&
-            shift < static_cast<int>(skill_level_required_.size()))
-               ? skill_level_required_[shift]
+  // skill exigido en el (dia-de-estancia, turno).
+  // skill_level_required_ tiene length_of_stay * shifts_per_day entradas.
+  [[nodiscard]] SkillLevel GetSkillLevelAt(int day_in_stay,
+                                            Shift shift) const noexcept {
+    if (length_of_stay_ <= 0) return 0;
+    int shifts_per_day =
+        static_cast<int>(skill_level_required_.size()) / length_of_stay_;
+    int idx = day_in_stay * shifts_per_day + shift;
+    return (idx >= 0 && idx < static_cast<int>(skill_level_required_.size()))
+               ? skill_level_required_[idx]
                : 0;
   }
 
@@ -107,10 +120,11 @@ class Patient {
     return day >= surgery_release_day_;
   }
 
-  // dias de retraso respecto a due_day (0 si llega a tiempo)
+  // dias de espera respecto a release_day (0 si entra el dia mas temprano).
+  // Coincide con la definicion oficial de PatientDelay del IHTC 2024.
   [[nodiscard]] int GetDelayDays(Day admission_day) const noexcept {
-    return (admission_day > surgery_due_day_)
-               ? (admission_day - surgery_due_day_)
+    return (admission_day > surgery_release_day_)
+               ? (admission_day - surgery_release_day_)
                : 0;
   }
 

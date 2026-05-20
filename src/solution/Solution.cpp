@@ -208,13 +208,16 @@ bool Solution::AssignNurse(NurseId nurse_id, RoomId room_id, Day day,
   const auto& patients_in_room = GetRoomPatients(room_id, day);
   int total_workload = 0;
   for (PatientId pid : patients_in_room) {
-    total_workload += problem_.GetPatient(pid).GetWorkloadForShift(shift);
+    Day admission = patient_admission_day_[pid];
+    int day_in_stay = day - admission;
+    total_workload +=
+        problem_.GetPatient(pid).GetWorkloadAt(day_in_stay, shift);
   }
 
   // tambien los ocupantes
   for (const auto& occ : problem_.GetOccupants()) {
     if (occ.GetRoomId() == room_id && occ.IsPresentOnDay(day)) {
-      total_workload += occ.GetWorkloadForShift(shift);
+      total_workload += occ.GetWorkloadAt(day, shift);
     }
   }
 
@@ -237,12 +240,15 @@ bool Solution::UnassignNurse(RoomId room_id, Day day, Shift shift) {
   const auto& patients_in_room = GetRoomPatients(room_id, day);
   int total_workload = 0;
   for (PatientId pid : patients_in_room) {
-    total_workload += problem_.GetPatient(pid).GetWorkloadForShift(shift);
+    Day admission = patient_admission_day_[pid];
+    int day_in_stay = day - admission;
+    total_workload +=
+        problem_.GetPatient(pid).GetWorkloadAt(day_in_stay, shift);
   }
 
   for (const auto& occ : problem_.GetOccupants()) {
     if (occ.GetRoomId() == room_id && occ.IsPresentOnDay(day)) {
-      total_workload += occ.GetWorkloadForShift(shift);
+      total_workload += occ.GetWorkloadAt(day, shift);
     }
   }
 
@@ -379,7 +385,7 @@ void Solution::AddPatientToCaches(PatientId patient_id, RoomId room_id,
     for (Shift shift = 0; shift < num_shifts_; ++shift) {
       NurseId nurse_id = GetNurseAssignment(room_id, day, shift);
       if (nurse_id != kInvalidId) {
-        int workload = patient.GetWorkloadForShift(shift);
+        int workload = patient.GetWorkloadAt(d, shift);
         nurse_workload_[NurseDayShiftIndex(nurse_id, day, shift)] += workload;
       }
     }
@@ -425,7 +431,7 @@ void Solution::RemovePatientFromCaches(PatientId patient_id, RoomId room_id,
     for (Shift shift = 0; shift < num_shifts_; ++shift) {
       NurseId nurse_id = GetNurseAssignment(room_id, day, shift);
       if (nurse_id != kInvalidId) {
-        int workload = patient.GetWorkloadForShift(shift);
+        int workload = patient.GetWorkloadAt(d, shift);
         nurse_workload_[NurseDayShiftIndex(nurse_id, day, shift)] -= workload;
       }
     }

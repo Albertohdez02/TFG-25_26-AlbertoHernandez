@@ -281,17 +281,20 @@ int Evaluator::CalcNurseSkillCost(const Solution& sol,
 
         const auto& patients = sol.GetRoomPatients(r, d);
         for (PatientId pid : patients) {
-          SkillLevel required = prob.GetPatient(pid).GetSkillLevelForShift(s);
+          Day admission = sol.GetPatientAdmissionDay(pid);
+          int day_in_stay = d - admission;
+          SkillLevel required =
+              prob.GetPatient(pid).GetSkillLevelAt(day_in_stay, s);
           if (nurse_skill < required) {
-            cost += weight;
+            cost += (required - nurse_skill) * weight;
           }
         }
 
         for (const auto& occ : prob.GetOccupants()) {
           if (occ.GetRoomId() == r && occ.IsPresentOnDay(d)) {
-            SkillLevel required = occ.GetSkillLevelForShift(s);
+            SkillLevel required = occ.GetSkillLevelAt(d, s);
             if (nurse_skill < required) {
-              cost += weight;
+              cost += (required - nurse_skill) * weight;
             }
           }
         }

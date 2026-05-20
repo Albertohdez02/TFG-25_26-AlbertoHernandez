@@ -43,9 +43,15 @@ class Occupant {
     return workload_produced_;
   }
 
-  [[nodiscard]] int GetWorkloadForShift(Shift shift) const noexcept {
-    return (shift >= 0 && shift < static_cast<int>(workload_produced_.size()))
-               ? workload_produced_[shift]
+  // carga producida en (dia, turno). Para ocupantes el dia-de-estancia
+  // coincide con el dia absoluto (ya estan ingresados desde el dia 0).
+  [[nodiscard]] int GetWorkloadAt(int day, Shift shift) const noexcept {
+    if (length_of_stay_ <= 0) return 0;
+    int shifts_per_day =
+        static_cast<int>(workload_produced_.size()) / length_of_stay_;
+    int idx = day * shifts_per_day + shift;
+    return (idx >= 0 && idx < static_cast<int>(workload_produced_.size()))
+               ? workload_produced_[idx]
                : 0;
   }
 
@@ -53,10 +59,15 @@ class Occupant {
     return skill_level_required_;
   }
 
-  [[nodiscard]] SkillLevel GetSkillLevelForShift(Shift shift) const noexcept {
-    return (shift >= 0 &&
-            shift < static_cast<int>(skill_level_required_.size()))
-               ? skill_level_required_[shift]
+  // skill exigido en (dia, turno) durante la estancia del ocupante.
+  [[nodiscard]] SkillLevel GetSkillLevelAt(int day,
+                                            Shift shift) const noexcept {
+    if (length_of_stay_ <= 0) return 0;
+    int shifts_per_day =
+        static_cast<int>(skill_level_required_.size()) / length_of_stay_;
+    int idx = day * shifts_per_day + shift;
+    return (idx >= 0 && idx < static_cast<int>(skill_level_required_.size()))
+               ? skill_level_required_[idx]
                : 0;
   }
 
