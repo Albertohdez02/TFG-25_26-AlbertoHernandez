@@ -97,6 +97,28 @@ void RandomGenerator::GeneratePatientAssignments(Solution& solution,
 }
 
 
+// Regenera la matriz de enfermeras desde cero
+//
+// Util cuando la matriz acumulo decisiones suboptimas tras muchos movimientos
+// VNS. Borra todas las (room, day, shift) y vuelve a llamar a la greedy.
+// El llamante decide si aceptar o revertir el resultado.
+void RandomGenerator::RegenerateNurses(Solution& solution,
+                                       const ProblemData& problem,
+                                       std::mt19937& rng) {
+  int num_shifts = problem.GetNumShiftTypes();
+  for (RoomId r = 0; r < problem.GetNumRooms(); ++r) {
+    for (Day d = 0; d < problem.GetNumDays(); ++d) {
+      for (Shift s = 0; s < num_shifts; ++s) {
+        if (solution.GetNurseAssignment(r, d, s) != kInvalidId) {
+          solution.UnassignNurse(r, d, s);
+        }
+      }
+    }
+  }
+  GenerateNurseAssignments(solution, problem, rng);
+}
+
+
 // Asignacion de enfermeras GREEDY
 
 /** @brief Genera las asignaciones de enfermeras.

@@ -23,6 +23,16 @@
 #include "RandomGenerator.h"
 
 // ============================================================================
+// Config thread_local
+// ============================================================================
+// La VNS la invoca ACOSolver desde varios hilos en paralelo. Cada hilo
+// guarda su propia copia del VNSConfig para que los operadores estaticos
+// (que no reciben el config por parametro) puedan leerlo sin races.
+namespace {
+thread_local VNSConfig g_vns_config{};
+}
+
+// ============================================================================
 // Estadisticas
 // ============================================================================
 
@@ -59,7 +69,11 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
                                   std::mt19937& rng,
                                   double time_limit_seconds,
                                   uint8_t enabled_mask,
-                                  bool use_alns) {
+                                  bool use_alns,
+                                  const VNSConfig& config) {
+  // guardar config para este hilo: los operadores estaticos lo leen
+  g_vns_config = config;
+
   LocalSearchStats stats;
   auto start_time = std::chrono::steady_clock::now();
   const ProblemData& prob = solution.GetProblem();
@@ -97,7 +111,19 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
   // Si use_alns: hasta 30 iteraciones de destroy/repair (cada una mas
   // informativa que un Perturb ciego). Si ILS clasico: 15 (v2).
   const int kMaxPerturbations = use_alns ? 30 : 15;
-  constexpr int kPerturbStrength = 4;
+
+  // A3: kPerturbStrength proporcional al tamano (legacy fijo 4).
+  // strength = clamp(factor * num_scheduled, base, max).
+  // Para i22 (174): clamp(0.10*174=17, 4, 25) = 17 pacientes perturbados.
+  // Auditoria H-11: con 4 fijos, instancias grandes no escapan valles.
+  auto compute_strength = [&]() {
+    int n = static_cast<int>(solution.GetScheduledPatients().size());
+    int s = static_cast<int>(std::round(
+        g_vns_config.perturb_strength_factor * static_cast<double>(n)));
+    s = std::max(g_vns_config.perturb_strength_base, s);
+    s = std::min(g_vns_config.perturb_strength_max, s);
+    return s;
+  };
 
   // Modulo ALNS opcional. Se instancia con el coste inicial para calibrar T_0.
   std::unique_ptr<ALNSPerturbation> alns;
@@ -122,6 +148,28 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
       ++iter;
       stats.iterations = iter;
       ls_improved = false;
+
+      // A5: cada N iteraciones, regenerar matriz nurse desde cero. Si mejora
+      // (o empeora menos del tolerance %), aceptar; si no, revertir.
+      // Defendido por snapshot completo de Solution (copy constructor).
+      if (g_vns_config.refresh_nurses &&
+          g_vns_config.nurse_refresh_every > 0 &&
+          iter > 0 &&
+          iter % g_vns_config.nurse_refresh_every == 0) {
+        Solution snapshot = solution;
+        int snapshot_cost = current_cost;
+        RandomGenerator::RegenerateNurses(solution, prob, rng);
+        int new_cost = Evaluator::Evaluate(solution);
+        double tol_pct = g_vns_config.nurse_refresh_tolerance_pct;
+        double max_allowed =
+            static_cast<double>(snapshot_cost) * (1.0 + tol_pct / 100.0);
+        if (static_cast<double>(new_cost) <= max_allowed) {
+          current_cost = new_cost;  // aceptar
+        } else {
+          solution = std::move(snapshot);
+          current_cost = snapshot_cost;
+        }
+      }
 
       std::shuffle(order.begin(), order.end(), rng);
 
@@ -166,7 +214,7 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
     } else {
       solution = best_solution;
       current_cost = best_cost;
-      Perturb(solution, kPerturbStrength, rng);
+      Perturb(solution, compute_strength(), rng);
       // Perturb mueve pacientes y puede dejar celdas sin enfermera
       RandomGenerator::EnsureFullNurseCoverage(solution, prob, rng);
       current_cost = Evaluator::Evaluate(solution);
@@ -194,14 +242,15 @@ std::vector<PatientId> LocalSearch::GetShuffledScheduled(
   const auto& scheduled = solution.GetScheduledPatients();
   std::vector<PatientId> patients(scheduled.begin(), scheduled.end());
   std::shuffle(patients.begin(), patients.end(), rng);
-  // CAP POTENCIALMENTE PEQUEÑO PARA INSTANCIAS GRANDES
-  // EN LA AUDITORIA SE MARCO COMO PROBLEMA, A PESAR DE USAR SHUFFLE, YA QUE EN 
-  // MUCHAS INSTANCIAS GRANDES LOS OPERADORES SOLO PUEDEN VER UN PEQUEÑO SUBCONJUNTO DE PACIENTES
-  // PROGRAMADOS (LOS PRIMEROS 60 TRAS EL SHUFFLE).
-  constexpr int kMaxPatients = 60;
 
-  if (static_cast<int>(patients.size()) > kMaxPatients) {
-    patients.resize(kMaxPatients);
+  // A1: cap configurable (0 = sin cap, default agresivo).
+  // Legacy: 60. Auditoria H-1 mostro que ese cap limitaba la VNS a < 35% de la
+  // solucion en instancias grandes (i22=174, i27, i26), explicando el
+  // estancamiento al ampliar tiempo. Sin cap, todos los operadores ven la
+  // solucion completa.
+  int cap = g_vns_config.max_patients_per_op;
+  if (cap > 0 && static_cast<int>(patients.size()) > cap) {
+    patients.resize(cap);
   }
   return patients;
 }
@@ -364,7 +413,9 @@ bool LocalSearch::TrySwapRooms(Solution& solution, int& current_cost,
   int n = static_cast<int>(patients.size());
   if (n < 2) return false;
 
-  constexpr int kMaxPairs = 200;
+  // A4: cap configurable (legacy 200). Mantenido por defecto: O(n^2) sin cap
+  // es prohibitivo. La auditoria deja esta como cota razonable.
+  const int kMaxPairs = g_vns_config.max_pairs_swap;
   int pairs_tried = 0;
 
   for (int i = 0; i < n && pairs_tried < kMaxPairs; ++i) {
@@ -432,7 +483,8 @@ bool LocalSearch::TrySwapDays(Solution& solution, int& current_cost,
   int n = static_cast<int>(patients.size());
   if (n < 2) return false;
 
-  constexpr int kMaxPairs = 200;
+  // A4: cap configurable (legacy 200). Mantenido O(n^2).
+  const int kMaxPairs = g_vns_config.max_pairs_swap;
   int pairs_tried = 0;
 
   for (int i = 0; i < n && pairs_tried < kMaxPairs; ++i) {
@@ -545,7 +597,21 @@ bool LocalSearch::TryToggleOptional(Solution& solution, int& current_cost,
       }
       std::shuffle(days.begin(), days.end(), rng);
 
+      // A2: TryToggleOptional exhaustivo. Antes se hacia "goto next_optional"
+      // tras la primera posicion factible que NO mejoraba el coste, lo que
+      // dejaba al opcional fuera tras un unico intento. Ahora probamos hasta
+      // max_insertions_per_optional posiciones factibles distintas.
+      // Auditoria H-10: probable causa de los 92 opcionales sin programar
+      // en i22 (450 x 92 = 41,400 puntos de coste).
+      int insertions_tried = 0;
+      const int max_ins = g_vns_config.exhaustive_optional
+                              ? g_vns_config.max_insertions_per_optional
+                              : 1;
+      bool break_optional = false;
+
       for (Day day : days) {
+        if (break_optional) break;
+
         std::vector<OperatingTheaterId> open_ots;
         for (OperatingTheaterId ot = 0; ot < prob.GetNumOperatingTheaters();
              ++ot) {
@@ -557,7 +623,12 @@ bool LocalSearch::TryToggleOptional(Solution& solution, int& current_cost,
         std::shuffle(open_ots.begin(), open_ots.end(), rng);
 
         for (RoomId room : rooms) {
+          if (break_optional) break;
           for (OperatingTheaterId ot : open_ots) {
+            if (insertions_tried >= max_ins) {
+              break_optional = true;
+              break;
+            }
             if (FeasibilityChecker::IsFeasiblePatientAssignment(
                     solution, pid, room, day, ot)) {
               solution.AssignPatient(pid, room, day, ot);
@@ -569,12 +640,11 @@ bool LocalSearch::TryToggleOptional(Solution& solution, int& current_cost,
               }
 
               solution.UnassignPatient(pid);
-              goto next_optional;  // solo 1 intento por paciente
+              ++insertions_tried;
             }
           }
         }
       }
-      next_optional:;
     }
   }
 
@@ -604,9 +674,12 @@ bool LocalSearch::TryChangeNurse(Solution& solution, int& current_cost,
   }
   if (positions.empty()) return false;
   std::shuffle(positions.begin(), positions.end(), rng);
-  // CAP POTENCIALMENTE PEQUEÑO PARA INSTANCIAS GRANDES
-  constexpr int kMaxPositions = 100;
-  if (static_cast<int>(positions.size()) > kMaxPositions) {
+  // A4: cap configurable de TryChangeNurse (legacy 100, ahora default 500).
+  // En instancias grandes (i22: 14 rooms * 28 dias * 3 turnos ~= 1176 celdas)
+  // 100 era < 8.5% del espacio; 500 ya es ~43% y permite encontrar mas mejoras.
+  const int kMaxPositions = g_vns_config.max_positions_nurse;
+  if (kMaxPositions > 0 &&
+      static_cast<int>(positions.size()) > kMaxPositions) {
     positions.resize(kMaxPositions);
   }
 
@@ -687,7 +760,8 @@ bool LocalSearch::TryRelocate(Solution& solution, int& current_cost,
 
     solution.UnassignPatient(pid);
 
-    constexpr int kMaxCombos = 30;
+    // A4: cap configurable de TryRelocate (legacy 30, ahora default 200).
+    const int kMaxCombos = g_vns_config.max_combos_relocate;
     int combos_tried = 0;
 
     for (Day new_day : days) {

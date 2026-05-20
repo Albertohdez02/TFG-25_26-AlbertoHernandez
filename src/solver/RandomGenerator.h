@@ -47,6 +47,14 @@ class RandomGenerator {
                                       const ProblemData& problem,
                                       std::mt19937& rng);
 
+  // borra todas las asignaciones de enfermera y las regenera desde cero con
+  // GenerateNurseAssignments. Util cuando la matriz nurse acumulo decisiones
+  // suboptimas tras muchos movimientos VNS (continuidad rota, sobrecarga).
+  // El llamante es responsable de evaluar la mejora y revertir si empeora.
+  static void RegenerateNurses(Solution& solution,
+                                const ProblemData& problem,
+                                std::mt19937& rng);
+
   // intenta asignar un paciente probando todos los dias de su ventana (sin forzar)
   static bool TryAssignPatientFeasibly(Solution& solution, PatientId pid,
                                        const ProblemData& problem,

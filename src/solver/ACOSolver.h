@@ -29,6 +29,7 @@
 
 #include "../entities/ProblemData.h"
 #include "../solution/Solution.h"
+#include "LocalSearch.h"  // VNSConfig
 
 // Parametros del algoritmo ACO
 struct ACOParams {
@@ -41,6 +42,23 @@ struct ACOParams {
   int    stagnation_k = 15;   // iteraciones sin mejora global antes de reinicializar
   int    pool_size    = 4;    // hilos paralelos por iteracion (regla IHTC: max 4)
   bool   use_alns     = false;// si true, usa ALNS+SA en lugar del ILS clasico
+
+  // B1: si true, eta_room incluye penalizaciones por capacidad y compatibilidad
+  // de genero/edad. Si false, eta_room sigue siendo binaria {0,1} (legacy).
+  bool   rich_eta_room = true;
+
+  // B2: si true, eta_day incluye penalizaciones por OT no abierto y carga de
+  // cirujano ese dia. Si false, solo PatientDelay (legacy).
+  bool   rich_eta_day  = true;
+
+  // B3: si true, warm_budget = clamp(0.08 * time_limit, 30s, 180s). Si false,
+  // warm_budget = min(30s, 5% del tiempo) (legacy).
+  bool   adaptive_warm_start = true;
+
+  // Configuracion de la VNS (caps, exhaustive, refresh nurses, etc.).
+  // Default = agresivo (Bloque A activo). Para legacy, pasar el resultado
+  // de MakeLegacyVNSConfig() en main.cpp.
+  VNSConfig vns_config = {};
 };
 
 class ACOSolver {
@@ -61,9 +79,14 @@ class ACOSolver {
                               const ProblemData& problem, double tau_init);
 
   // precomputa eta_day y eta_room (invariante durante toda la ejecucion)
+  // B1/B2: si rich_eta_room/day estan activos, incluye penalizaciones
+  // adicionales para diferenciar habitaciones/dias por mas factores que
+  // la mera compatibilidad y el delay.
   static void PrecomputeHeuristics(std::vector<double>& eta_day,
                                    std::vector<double>& eta_room,
-                                   const ProblemData& problem);
+                                   const ProblemData& problem,
+                                   bool rich_eta_room = true,
+                                   bool rich_eta_day  = true);
 
   // construye una solucion siguiendo feromonas y heuristica
   static Solution ConstructSolution(const PheromoneMatrix& tau_day,

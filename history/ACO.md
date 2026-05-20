@@ -1058,3 +1058,93 @@ Recomendación: **Etapa 3b primero** (recalibración barata) y luego Etapa 4 (ca
 | [tables/aco-random-comparison-v3.csv](../tables/aco-random-comparison-v3.csv) | Tabla con costes y gaps de v3 |
 | [graficas_v3/](../graficas_v3/) | 5 PNG + comparison_summary.csv |
 | [logs/comparison_v3/](../logs/comparison_v3/) | Logs por instancia + `_progress.csv` |
+
+---
+
+## 18. Sesión 2026-05-20 — Bug-fix del Evaluator y Bloques A+B de mejoras
+
+### 18.1 Bug-fix del evaluator interno (Sesión previa, día 19)
+
+Al ejecutar el validador oficial `IHTP_Validator` sobre las soluciones del solver descubrimos que el **evaluador interno subestimaba el coste en un ~65 %** debido a tres bugs:
+
+1. **PatientDelay calculado desde `due_day` en lugar de `release_day`**: `Patient::GetDelayDays` devolvía `max(0, admission - surgery_due_day_)` (cero para casi todos los pacientes) cuando el validador oficial usa `admission - surgery_release_day`. Para i08, el coste real de delay era 10560, el solver veía 0.
+2. **`GetSkillLevelForShift` y `GetWorkloadForShift` usaban solo el primer día de la matriz** `skill_level_required[LOS × shifts_per_day]`. Resultado: el día 4 de la estancia de un paciente leía las skills del día 0. Reemplazado por `GetSkillLevelAt(day_in_stay, shift)` y `GetWorkloadAt(day_in_stay, shift)` que indexan correctamente. Igual en `Occupant.h` (donde `day_in_stay == day` porque entran el día 0).
+3. **`Evaluator::CalcNurseSkillCost` añadía `weight` por violación en lugar del déficit real**: el validador oficial usa `(required - nurse_skill) * weight`. Ajustado.
+
+Impacto medido en i08 a 1200 s con el mismo seed:
+- Antes del fix: coste oficial **16,220** (interno reportaba 3,212).
+- Después del fix: coste oficial **9,070** (interno 8,616 — la pequeña discrepancia restante es por `ContinuityOfCare` y `RoomAgeMix` que difieren en fórmula pero el usuario indicó no replicar exactamente el validador oficial).
+
+Benchmark completo 30 instancias 600 s (validador oficial):
+- ACO pre-fix: 1,110,465 (gap +54.9 % vs `best-solutions/`)
+- ACO post-fix: **1,038,478** (gap **+44.9 %** vs `best-solutions/`)
+- ACO gana a Random en **24/30** instancias (vs 21/30 antes).
+
+Ficheros: [src/entities/Patient.h](../src/entities/Patient.h), [src/entities/Occupant.h](../src/entities/Occupant.h), [src/evaluator/Evaluator.cpp](../src/evaluator/Evaluator.cpp), [src/solution/Solution.cpp](../src/solution/Solution.cpp), [src/solver/RandomGenerator.cpp](../src/solver/RandomGenerator.cpp). Commit `[9260404]`.
+
+### 18.2 Auditoría general post-fix
+
+Con el evaluador honesto, una nueva auditoría completa del solver identificó tres familias de problemas que limitan el algoritmo:
+
+**Crítico (VNS)**:
+- **H-1**: `GetShuffledScheduled` recorta a **60 pacientes** todos los operadores patient-based. En i22 (174 pacientes) la VNS solo ve 35 % de la solución por iteración. Probable causa del estancamiento al ampliar tiempo.
+- **H-2**: caps duros en `TrySwapRooms/SwapDays` (200 pares), `TryRelocate` (30 combos), `TryChangeNurse` (100 celdas). En i22, `TryChangeNurse` ve 100 de ~1176 posibles = 8.5 %.
+- **H-3**: sin delta-eval. Cada movimiento llama a `Evaluator::Evaluate` que recalcula los 12 componentes.
+
+**Importante (ACO)**:
+- **H-4**: `η_room ∈ {0,1}`. No diferencia habitaciones compatibles entre sí.
+- **H-5**: `η_day` solo modela PatientDelay (8 % del coste en i22). Ignora OT-open, surgeon-load.
+- **H-6/H-7**: Nurses fuera del modelo ACO. `GenerateNurseAssignments` es greedy idéntico a Random, solo mira día anterior. En i22, `continuity + nurse_workload = 41 % del coste`.
+
+**Medio (VNS/Random)**:
+- **H-10**: `TryToggleOptional` descarta opcionales tras un único intento fallido. Causa probable de los **92 opcionales sin programar en i22** (+41,400 puntos de coste).
+- **H-11**: `kPerturbStrength = 4` fijo, demasiado débil en instancias grandes.
+
+### 18.3 Bloque A — Quick wins en VNS
+
+Cinco cambios incrementales con flag de fallback (struct `VNSConfig` en `LocalSearch.h`):
+
+| # | Cambio | Default agresivo | Legacy |
+|---|---|---|---|
+| A1 | Cap pacientes en `GetShuffledScheduled` | 0 (sin cap) | 60 |
+| A2 | `TryToggleOptional` exhaustivo (hasta N posiciones) | 50 | 1 (legacy) |
+| A3 | `kPerturbStrength` proporcional `(factor × scheduled, base, max)` | (0.10, 4, 25) | (0, 4, 4) |
+| A4 | Caps de operadores `Relocate`/`ChangeNurse` | 200 / 500 | 30 / 100 |
+| A5 | Refresh nurse cada N iter LS (snapshot + tol) | cada 50 iter, 2 % | desactivado |
+
+Cada cambio mira `g_vns_config` (thread_local). El binario acepta nuevo arg CLI `preset` ∈ {`default`, `legacy`}: `default` activa Bloque A, `legacy` lo desactiva.
+
+### 18.4 Bloque B — Heurísticas ACO informadas
+
+| # | Cambio | Default | Legacy |
+|---|---|---|---|
+| B1 | `η_room` enriquecida (penalty por género/edad de ocupantes preexistentes + bonus por capacidad) | activo | binaria {0,1} |
+| B2 | `η_day` enriquecida (penalty por OT no abierto, surgeon-load del día) | activo | solo delay |
+| B3 | Warm-start budget = clamp(8 % × time, 30s, 180s) | adaptativo | min(30s, 5%) |
+
+Flags: `ACOParams::rich_eta_room`, `rich_eta_day`, `adaptive_warm_start`. Por defecto activos; `preset=legacy` los desactiva.
+
+### 18.5 Ficheros modificados / nuevos en esta sesión
+
+| Path | Acción |
+|---|---|
+| [src/solver/LocalSearch.h](../src/solver/LocalSearch.h) | Nuevo `struct VNSConfig` + parámetro `const VNSConfig&` en `Run` |
+| [src/solver/LocalSearch.cpp](../src/solver/LocalSearch.cpp) | A1-A5: cap configurable, exhaustive optional, perturb proporcional, refresh nurses |
+| [src/solver/ACOSolver.h](../src/solver/ACOSolver.h) | Nuevos flags B1/B2/B3 + miembro `vns_config` |
+| [src/solver/ACOSolver.cpp](../src/solver/ACOSolver.cpp) | B1: `η_room` rica; B2: `η_day` rica; B3: warm-budget adaptativo; propaga `vns_config` a `LocalSearch::Run` |
+| [src/solver/RandomGenerator.h/.cpp](../src/solver/RandomGenerator.cpp) | A5: nueva `RegenerateNurses(sol, problem, rng)` |
+| [src/main.cpp](../src/main.cpp) | D1: 9º arg CLI `preset` ∈ {default, legacy}; helper `MakeLegacyVNSConfig` |
+
+### 18.6 Política de fallback
+
+- Toda la configuración pasa por `VNSConfig` y `ACOParams`. Default = agresivo (Bloque A+B activos).
+- CLI: `./ihtc_solver ... aco 12 ils default` (todos los flags A+B activos) vs `./ihtc_solver ... aco 12 ils legacy` (comportamiento pre-Bloque-A).
+- Snapshot pre-mejoras: `solutions_aco_postfix/`, `tables/aco-random-comparison-postfix.csv`.
+
+### 18.7 Bloque C — Pendiente de evaluación
+
+Según criterios del plan: el Bloque C (`τ_nurse` + `GenerateNurseAssignmentsACO`) se activa solo si tras A+B:
+- Gap medio sigue > 35 %, **o**
+- Componentes `continuity_of_care + nurse_workload` siguen > 30 % del coste total en i22.
+
+Pendiente medir benchmark A+B para decidir.

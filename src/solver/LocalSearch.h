@@ -45,19 +45,55 @@ struct LocalSearchStats {
   [[nodiscard]] std::string ToString() const;
 };
 
+// Parametros de la VNS / ILS. Defaults agresivos (Bloque A de mejoras).
+// Para volver a comportamiento legacy basta con construir un VNSConfig con
+// los valores anteriores: max_patients_per_op=60, exhaustive_optional=false,
+// max_combos_relocate=30, max_positions_nurse=100, perturb_strength_*=fijo 4,
+// refresh_nurses=false.
+struct VNSConfig {
+  // A1: cap de pacientes por operador patient-based (0 = sin cap)
+  int max_patients_per_op = 0;
+
+  // A2: TryToggleOptional exhaustivo (true = prueba hasta max_insertions
+  // posiciones por opcional; false = comportamiento legacy con 1 intento)
+  bool exhaustive_optional = true;
+  int  max_insertions_per_optional = 50;
+
+  // A3: perturbacion proporcional al tamano:
+  //   strength = clamp(round(perturb_strength_factor * num_scheduled),
+  //                    perturb_strength_base, perturb_strength_max)
+  int    perturb_strength_base = 4;
+  int    perturb_strength_max  = 25;
+  double perturb_strength_factor = 0.10;
+
+  // A4: caps levantados (legacy = 200 / 30 / 100)
+  int max_pairs_swap        = 200;   // TrySwapRooms, TrySwapDays (mantenido)
+  int max_combos_relocate   = 200;   // TryRelocate (era 30)
+  int max_positions_nurse   = 500;   // TryChangeNurse (era 100)
+
+  // A5: reconstruccion periodica de enfermeras (0 = desactivado)
+  // Cada N iteraciones del bucle LS, regenera nurse desde cero y acepta solo
+  // si no empeora mas del nurse_refresh_tolerance_pct %.
+  int    nurse_refresh_every          = 50;
+  double nurse_refresh_tolerance_pct  = 2.0;
+  bool   refresh_nurses               = true;
+};
+
 class LocalSearch {
  public:
   // ejecuta busqueda local ILS sobre la solucion (con time limit en segundos)
   // enabled_mask: bitmask de 8 bits; bit i = 1 activa el operador i.
   //   0xFF = todos activos (comportamiento por defecto)
   // use_alns: si true, sustituye la perturbacion ILS clasica por una iteracion
-  //   ALNS (destroy/repair + Simulated Annealing acceptance). Default false
-  //   mantiene comportamiento v2 (ILS clasico).
+  //   ALNS (destroy/repair + Simulated Annealing acceptance).
+  // config: parametros configurables de la VNS (caps y flags). Default
+  //   agresivo; pasar valores legacy para reproducir comportamiento previo.
   static LocalSearchStats Run(Solution& solution, int max_iterations,
                               std::mt19937& rng,
                               double time_limit_seconds = 30.0,
                               uint8_t enabled_mask = 0xFF,
-                              bool use_alns = false);
+                              bool use_alns = false,
+                              const VNSConfig& config = {});
 
  private:
   // vecindarios exhaustivos (iteran todos los pacientes, first-improvement)

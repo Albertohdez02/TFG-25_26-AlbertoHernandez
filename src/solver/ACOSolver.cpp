@@ -57,7 +57,8 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
   // heuristica precomputada (invariante durante toda la ejecucion)
   std::vector<double> eta_day(num_patients * num_days,  0.0);
   std::vector<double> eta_room(num_patients * num_rooms, 0.0);
-  PrecomputeHeuristics(eta_day, eta_room, problem);
+  PrecomputeHeuristics(eta_day, eta_room, problem,
+                       params.rich_eta_room, params.rich_eta_day);
 
   Solution best_solution(problem);
   int best_cost = std::numeric_limits<int>::max();
@@ -67,12 +68,23 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
   // la feromona con sus decisiones para arrancar el aprendizaje informado en
   // lugar de uniforme. Si el seed sale infactible (i16/i20 muy restrictivas),
   // se cae al esquema actual (tau_init uniforme) sin tocar nada.
-  double warm_budget = std::min(30.0, time_limit_s * 0.05);
+  //
+  // B3: con adaptive_warm_start, el presupuesto del seed escala con el tiempo
+  // total disponible (8% del tiempo, acotado a [30s, 180s]). Asi en
+  // ejecuciones de 1200-1800s el seed dispone de hasta 3 min para producir
+  // una solucion de alta calidad y sembrar feromonas mucho mas informativas.
+  double warm_budget;
+  if (params.adaptive_warm_start) {
+    warm_budget = std::clamp(time_limit_s * 0.08, 30.0, 180.0);
+  } else {
+    warm_budget = std::min(30.0, time_limit_s * 0.05);
+  }
   if (warm_budget >= 1.0 && remaining_s() > warm_budget + 5.0) {
     std::mt19937 seed_rng(rng());
     Solution seed = RandomGenerator::Generate(problem, seed_rng);
     LocalSearch::Run(seed, max_ls_iter, seed_rng, warm_budget,
-                     /*enabled_mask=*/0xFF, params.use_alns);
+                     /*enabled_mask=*/0xFF, params.use_alns,
+                     params.vns_config);
     if (FeasibilityChecker::Check(seed).feasible) {
       int seed_cost = Evaluator::Evaluate(seed);
       if (seed_cost > 0) {
@@ -132,7 +144,8 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
           // 2. mejora con VNS (tiempo fijo por batch)
           LocalSearchStats st = LocalSearch::Run(
               candidate, max_ls_iter, local_rng, batch_ls_time,
-              /*enabled_mask=*/0xFF, params.use_alns);
+              /*enabled_mask=*/0xFF, params.use_alns,
+              params.vns_config);
           results[k].solution = std::move(candidate);
           results[k].cost     = st.final_cost;
           results[k].valid    = true;
@@ -232,11 +245,27 @@ void ACOSolver::InitPheromones(PheromoneMatrix& tau_day,
  */
 void ACOSolver::PrecomputeHeuristics(std::vector<double>& eta_day,
                                       std::vector<double>& eta_room,
-                                      const ProblemData& problem) {
+                                      const ProblemData& problem,
+                                      bool rich_eta_room,
+                                      bool rich_eta_day) {
   int num_patients = problem.GetNumPatients();
   int num_days     = problem.GetNumDays();
   int num_rooms    = problem.GetNumRooms();
+  int num_ots      = problem.GetNumOperatingTheaters();
   const Weights& w = problem.GetWeights();
+
+  // B2 (rich_eta_day): pre-calcular si hay algun OT abierto en cada dia
+  std::vector<bool> any_ot_open(num_days, false);
+  if (rich_eta_day) {
+    for (Day d = 0; d < num_days; ++d) {
+      for (OperatingTheaterId ot = 0; ot < num_ots; ++ot) {
+        if (problem.GetOperatingTheater(ot).IsOpenOnDay(d)) {
+          any_ot_open[d] = true;
+          break;
+        }
+      }
+    }
+  }
 
   for (PatientId pid = 0; pid < num_patients; ++pid) {
     const Patient& p = problem.GetPatient(pid);
@@ -245,16 +274,65 @@ void ACOSolver::PrecomputeHeuristics(std::vector<double>& eta_day,
                   ? std::min(p.GetSurgeryDueDay(), num_days - 1)
                   : num_days - 1;
 
-    // eta_day: preferir dias tempranos para minimizar coste de retraso
+    // eta_day: preferir dias tempranos para minimizar coste de retraso.
+    // B2: con rich_eta_day, ademas penaliza dias sin OT abierto y dias con
+    // carga prevista alta del cirujano del paciente (estimacion estatica
+    // basada en el numero de pacientes obligatorios del mismo cirujano).
+    SurgeonId surgeon = p.GetSurgeonId();
     for (Day d = release; d <= upper && d < num_days; ++d) {
       int delay = p.GetDelayDays(d);
       double penalty = static_cast<double>(delay * w.patient_delay);
+
+      if (rich_eta_day) {
+        // dias sin OT abierto: penalty alta (no se podra operar)
+        if (!any_ot_open[d]) {
+          penalty += 1000.0;
+        }
+        // dias en que el cirujano tiene poca disponibilidad: penalty
+        int max_t = problem.GetSurgeon(surgeon).GetMaxSurgeryTimeForDay(d);
+        if (max_t <= 0) {
+          penalty += 500.0;  // cirujano no opera ese dia
+        } else if (max_t < p.GetSurgeryDuration()) {
+          penalty += 200.0;  // no cabe ni vacio el cirujano
+        }
+      }
+
       eta_day[pid * num_days + d] = 1.0 / (1.0 + penalty);
     }
 
-    // eta_room: solo distingue compatible vs incompatible (restriccion dura HC7)
+    // eta_room: B1 - incluir penalty por ocupantes preexistentes de la
+    // habitacion (genero distinto, edad distinta) y bonus por capacidad mayor.
+    // Si rich_eta_room=false, mantiene comportamiento binario {0,1}.
+    Gender pgender = p.GetGender();
+    AgeGroup pagegroup = p.GetAgeGroup();
     for (RoomId r = 0; r < num_rooms; ++r) {
-      eta_room[pid * num_rooms + r] = p.IsCompatibleWithRoom(r) ? 1.0 : 0.0;
+      if (!p.IsCompatibleWithRoom(r)) {
+        eta_room[pid * num_rooms + r] = 0.0;
+        continue;
+      }
+      if (!rich_eta_room) {
+        eta_room[pid * num_rooms + r] = 1.0;
+        continue;
+      }
+
+      double penalty = 0.0;
+      // ocupantes preexistentes de la habitacion (conocidos al inicio)
+      for (const auto& occ : problem.GetOccupants()) {
+        if (occ.GetRoomId() != r) continue;
+        if (occ.GetGender() != pgender) {
+          penalty += static_cast<double>(w.room_gender_mix);
+        }
+        int age_diff = std::abs(static_cast<int>(occ.GetAgeGroup()) -
+                                 static_cast<int>(pagegroup));
+        penalty += static_cast<double>(w.room_mixed_age) * age_diff;
+      }
+      // pequeño bonus a capacidad mayor (rooms grandes diluyen mejor)
+      int cap = problem.GetRoom(r).GetCapacity();
+      if (cap > 0) {
+        penalty += 1.0 / static_cast<double>(cap);
+      }
+
+      eta_room[pid * num_rooms + r] = 1.0 / (1.0 + penalty);
     }
   }
 }

@@ -35,6 +35,23 @@
 #include "solver/LocalSearch.h"
 #include "solver/RandomGenerator.h"
 
+// Helper: construye un VNSConfig "legacy" (caps duros pre-Bloque-A).
+// Permite reproducir el comportamiento previo desde CLI para benchmarks
+// comparativos sin recompilar.
+static VNSConfig MakeLegacyVNSConfig() {
+  VNSConfig cfg;
+  cfg.max_patients_per_op = 60;
+  cfg.exhaustive_optional = false;
+  cfg.max_insertions_per_optional = 1;
+  cfg.perturb_strength_base = 4;
+  cfg.perturb_strength_max = 4;
+  cfg.perturb_strength_factor = 0.0;
+  cfg.max_combos_relocate = 30;
+  cfg.max_positions_nurse = 100;
+  cfg.refresh_nurses = false;
+  return cfg;
+}
+
 // Imprime una linea separadora
 void PrintSeparator(const std::string& title) {
   std::cout << "\n" << std::string(60, '=') << "\n";
@@ -78,24 +95,34 @@ int main(int argc, char* argv[]) {
   std::string mode = "aco";        // "aco" o "random"
   int n_ants = -1;                 // <0 = usar default de ACOParams
   std::string perturb_kind = "ils"; // "ils" (default) o "alns" (Etapa 3)
+  std::string preset = "default";   // "default" o "legacy" (Bloque A+B mejoras)
 
   if (argc < 2) {
     std::cerr << "Uso: " << argv[0]
-              << " <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode] [n_ants] [perturb]\n";
+              << " <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode] [n_ants] [perturb] [preset]\n";
     std::cerr << "  mode: \"aco\" (default) o \"random\"\n";
     std::cerr << "  n_ants: hormigas por iteracion (default 12, solo modo aco)\n";
     std::cerr << "  perturb: \"ils\" (default) o \"alns\" (Etapa 3, destroy/repair + SA)\n";
+    std::cerr << "  preset: \"default\" (Bloque A+B activos, mejoras 2026-05) o \"legacy\" (caps duros y heuristicas pobres pre-Bloque-A)\n";
     return 1;
   }
 
   instance_file = argv[1];
-  if (argc >= 3) seed           = static_cast<unsigned int>(std::atoi(argv[2]));
-  if (argc >= 4) max_iterations = std::atoi(argv[3]);
-  if (argc >= 5) num_restarts   = std::atoi(argv[4]);
-  if (argc >= 6) global_time_s  = std::atof(argv[5]);
-  if (argc >= 7) mode           = argv[6];
-  if (argc >= 8) n_ants         = std::atoi(argv[7]);
-  if (argc >= 9) perturb_kind   = argv[8];
+  if (argc >= 3)  seed           = static_cast<unsigned int>(std::atoi(argv[2]));
+  if (argc >= 4)  max_iterations = std::atoi(argv[3]);
+  if (argc >= 5)  num_restarts   = std::atoi(argv[4]);
+  if (argc >= 6)  global_time_s  = std::atof(argv[5]);
+  if (argc >= 7)  mode           = argv[6];
+  if (argc >= 8)  n_ants         = std::atoi(argv[7]);
+  if (argc >= 9)  perturb_kind   = argv[8];
+  if (argc >= 10) preset         = argv[9];
+
+  // Construir configs segun preset
+  VNSConfig vns_cfg;  // default agresivo (Bloque A)
+  bool legacy = (preset == "legacy");
+  if (legacy) {
+    vns_cfg = MakeLegacyVNSConfig();
+  }
 
   std::mt19937 rng(seed);
 
@@ -127,6 +154,9 @@ int main(int argc, char* argv[]) {
     std::cout << "  Reinicios multi-start: " << num_restarts << "\n";
   }
   std::cout << "  Tiempo global maximo: " << global_time_s << " s\n";
+  std::cout << "  Preset: " << preset
+            << (legacy ? " (caps duros, heuristicas pobres)"
+                       : " (Bloque A+B mejoras activas)") << "\n";
 
 
   // PASO 2: Busqueda de la mejor solucion (ACO+VNS o multi-start greedy+ILS)
@@ -144,9 +174,16 @@ int main(int argc, char* argv[]) {
 
   if (mode == "aco") {
     // === Modo ACO: colonia de hormigas + VNS ===
-    ACOParams aco_params;  // parametros por defecto
+    ACOParams aco_params;  // parametros por defecto (Bloque B activo)
     if (n_ants > 0) aco_params.n_ants = n_ants;
     aco_params.use_alns = (perturb_kind == "alns");
+    if (legacy) {
+      // Bloque B desactivado en preset legacy
+      aco_params.rich_eta_room = false;
+      aco_params.rich_eta_day  = false;
+      aco_params.adaptive_warm_start = false;
+    }
+    aco_params.vns_config = vns_cfg;
     std::cout << "  Hormigas por iteracion: " << aco_params.n_ants << "\n";
     std::cout << "  Perturbacion: "
               << (aco_params.use_alns ? "ALNS+SA" : "ILS clasico") << "\n";
@@ -172,7 +209,9 @@ int main(int argc, char* argv[]) {
       int init_cost = Evaluator::Evaluate(candidate);
 
       LocalSearchStats ls_stats =
-          LocalSearch::Run(candidate, max_iterations, rng, time_for_restart);
+          LocalSearch::Run(candidate, max_iterations, rng, time_for_restart,
+                            /*enabled_mask=*/0xFF, /*use_alns=*/false,
+                            vns_cfg);
       total_improvements += ls_stats.improvements;
 
       init_costs.push_back(init_cost);
