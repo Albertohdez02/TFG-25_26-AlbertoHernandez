@@ -178,10 +178,11 @@ int main(int argc, char* argv[]) {
     if (n_ants > 0) aco_params.n_ants = n_ants;
     aco_params.use_alns = (perturb_kind == "alns");
     if (legacy) {
-      // Bloque B desactivado en preset legacy
+      // Bloque B/C desactivado en preset legacy
       aco_params.rich_eta_room = false;
       aco_params.rich_eta_day  = false;
       aco_params.adaptive_warm_start = false;
+      aco_params.use_tau_nurse = false;
     }
     aco_params.vns_config = vns_cfg;
     std::cout << "  Hormigas por iteracion: " << aco_params.n_ants << "\n";

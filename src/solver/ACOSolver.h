@@ -55,6 +55,14 @@ struct ACOParams {
   // warm_budget = min(30s, 5% del tiempo) (legacy).
   bool   adaptive_warm_start = true;
 
+  // C1: si true, las enfermeras se asignan en cada construccion ACO usando
+  // una matriz adicional tau_nurse[shift_type][nurse] aprendida (la actual
+  // greedy se usa como heuristica eta). Si false, GenerateNurseAssignments
+  // sigue siendo el unico mecanismo (legacy del Bloque B).
+  // tau_nurse aprende que enfermeras tienden a estar en buenas soluciones
+  // para cada turno: 3 * N doubles (~96 en i22), tamano viable.
+  bool   use_tau_nurse = true;
+
   // Configuracion de la VNS (caps, exhaustive, refresh nurses, etc.).
   // Default = agresivo (Bloque A activo). Para legacy, pasar el resultado
   // de MakeLegacyVNSConfig() en main.cpp.
@@ -78,6 +86,11 @@ class ACOSolver {
                               PheromoneMatrix& tau_room,
                               const ProblemData& problem, double tau_init);
 
+  // C1: inicializa tau_nurse[shift][nurse] a tau_init en todas las (s,n)
+  // donde la enfermera trabaja en al menos un dia con ese shift.
+  static void InitPheromonesNurse(PheromoneMatrix& tau_nurse,
+                                   const ProblemData& problem, double tau_init);
+
   // precomputa eta_day y eta_room (invariante durante toda la ejecucion)
   // B1/B2: si rich_eta_room/day estan activos, incluye penalizaciones
   // adicionales para diferenciar habitaciones/dias por mas factores que
@@ -88,18 +101,32 @@ class ACOSolver {
                                    bool rich_eta_room = true,
                                    bool rich_eta_day  = true);
 
-  // construye una solucion siguiendo feromonas y heuristica
+  // construye una solucion siguiendo feromonas y heuristica.
+  // Si params.use_tau_nurse, las enfermeras se asignan via ACO usando
+  // tau_nurse + heuristica eta_nurse dinamica.
   static Solution ConstructSolution(const PheromoneMatrix& tau_day,
                                     const PheromoneMatrix& tau_room,
+                                    const PheromoneMatrix& tau_nurse,
                                     const std::vector<double>& eta_day,
                                     const std::vector<double>& eta_room,
                                     const ProblemData& problem,
                                     const ACOParams& params,
                                     std::mt19937& rng);
 
+  // C1: asigna enfermeras a (room, day, shift) con pacientes/ocupantes
+  // usando tau_nurse[shift][nurse] + eta_nurse(n, room, day, shift) ACS.
+  // eta_nurse incorpora skill_penalty, workload, continuity (igual que la
+  // greedy pero invertida y normalizada).
+  static void GenerateNurseAssignmentsACO(Solution& solution,
+                                          const PheromoneMatrix& tau_nurse,
+                                          const ProblemData& problem,
+                                          const ACOParams& params,
+                                          std::mt19937& rng);
+
   // actualiza feromonas MMAS: evaporacion global + deposito de la mejor solucion
   static void UpdatePheromones(PheromoneMatrix& tau_day,
                                 PheromoneMatrix& tau_room,
+                                PheromoneMatrix& tau_nurse,
                                 const Solution& best_sol, int best_cost,
                                 const ProblemData& problem,
                                 const ACOParams& params);
@@ -107,6 +134,7 @@ class ACOSolver {
   // reinicializa todas las feromonas a tau_init (recuperacion ante estancamiento)
   static void ResetPheromones(PheromoneMatrix& tau_day,
                                PheromoneMatrix& tau_room,
+                               PheromoneMatrix& tau_nurse,
                                const ProblemData& problem, double tau_init);
 
   // siembra feromona elevada en las decisiones de una solucion semilla
@@ -114,6 +142,7 @@ class ACOSolver {
   // posiciones feasibles se ponen a tau_min para crear el contraste MMAS.
   static void SeedPheromones(PheromoneMatrix& tau_day,
                               PheromoneMatrix& tau_room,
+                              PheromoneMatrix& tau_nurse,
                               const Solution& seed, int seed_cost,
                               const ProblemData& problem,
                               const ACOParams& params);

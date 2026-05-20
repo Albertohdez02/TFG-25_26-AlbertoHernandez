@@ -48,11 +48,21 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
   int num_patients = problem.GetNumPatients();
   int num_days     = problem.GetNumDays();
   int num_rooms    = problem.GetNumRooms();
+  int num_shifts   = problem.GetNumShiftTypes();
+  int num_nurses   = problem.GetNumNurses();
 
   // matrices de feromona aplanadas: tau[pid * stride + idx]
   PheromoneMatrix tau_day(num_patients * num_days,  0.0);
   PheromoneMatrix tau_room(num_patients * num_rooms, 0.0);
   InitPheromones(tau_day, tau_room, problem, params.tau_init);
+
+  // C1: tau_nurse[shift * num_nurses + nurse]. Solo activa si use_tau_nurse.
+  // Tamano: 3 * N (e.g., 96 doubles en i22, N=32). Aprende que enfermeras
+  // tienden a estar en buenas soluciones para cada turno.
+  PheromoneMatrix tau_nurse(num_shifts * num_nurses, 0.0);
+  if (params.use_tau_nurse) {
+    InitPheromonesNurse(tau_nurse, problem, params.tau_init);
+  }
 
   // heuristica precomputada (invariante durante toda la ejecucion)
   std::vector<double> eta_day(num_patients * num_days,  0.0);
@@ -88,7 +98,8 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
     if (FeasibilityChecker::Check(seed).feasible) {
       int seed_cost = Evaluator::Evaluate(seed);
       if (seed_cost > 0) {
-        SeedPheromones(tau_day, tau_room, seed, seed_cost, problem, params);
+        SeedPheromones(tau_day, tau_room, tau_nurse, seed, seed_cost,
+                       problem, params);
         best_solution = seed;
         best_cost     = seed_cost;
       }
@@ -138,7 +149,7 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
           std::mt19937 local_rng(ant_seeds[k]);
           // 1. construccion guiada por feromonas (lectura concurrente segura:
           //    tau y eta son const en este bloque)
-          Solution candidate = ConstructSolution(tau_day, tau_room,
+          Solution candidate = ConstructSolution(tau_day, tau_room, tau_nurse,
                                                  eta_day, eta_room,
                                                  problem, params, local_rng);
           // 2. mejora con VNS (tiempo fijo por batch)
@@ -179,15 +190,15 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
                          best_cost <= iteration_best_cost);
       const Solution& update_sol  = use_global ? best_solution : iteration_best;
       int             update_cost = use_global ? best_cost : iteration_best_cost;
-      UpdatePheromones(tau_day, tau_room, update_sol, update_cost,
-                       problem, params);
+      UpdatePheromones(tau_day, tau_room, tau_nurse,
+                       update_sol, update_cost, problem, params);
     }
 
     ++stagnation_count;
 
     // 6. reinicializar feromonas si no hay mejora global en stagnation_k iters
     if (stagnation_count >= params.stagnation_k) {
-      ResetPheromones(tau_day, tau_room, problem, params.tau_init);
+      ResetPheromones(tau_day, tau_room, tau_nurse, problem, params.tau_init);
       stagnation_count = 0;
     }
   }
@@ -389,6 +400,7 @@ int ACOSolver::SelectByScore(const std::vector<double>& scores,
  */
 Solution ACOSolver::ConstructSolution(const PheromoneMatrix& tau_day,
                                        const PheromoneMatrix& tau_room,
+                                       const PheromoneMatrix& tau_nurse,
                                        const std::vector<double>& eta_day,
                                        const std::vector<double>& eta_room,
                                        const ProblemData& problem,
@@ -551,8 +563,14 @@ Solution ACOSolver::ConstructSolution(const PheromoneMatrix& tau_day,
     }
   }
 
-  // === asignacion de enfermeras (greedy, identica al generador aleatorio) ===
-  RandomGenerator::GenerateNurseAssignments(sol, problem, rng);
+  // === asignacion de enfermeras ===
+  // C1: si use_tau_nurse, usar la variante ACO que combina tau_nurse y
+  // eta_nurse heuristica. Si no, la greedy clasica (legacy).
+  if (params.use_tau_nurse && !tau_nurse.empty()) {
+    GenerateNurseAssignmentsACO(sol, tau_nurse, problem, params, rng);
+  } else {
+    RandomGenerator::GenerateNurseAssignments(sol, problem, rng);
+  }
 
   return sol;
 }
@@ -568,6 +586,7 @@ Solution ACOSolver::ConstructSolution(const PheromoneMatrix& tau_day,
  */
 void ACOSolver::UpdatePheromones(PheromoneMatrix& tau_day,
                                   PheromoneMatrix& tau_room,
+                                  PheromoneMatrix& tau_nurse,
                                   const Solution& best_sol,
                                   int best_cost,
                                   const ProblemData& problem,
@@ -577,6 +596,8 @@ void ACOSolver::UpdatePheromones(PheromoneMatrix& tau_day,
   int num_patients = problem.GetNumPatients();
   int num_days     = problem.GetNumDays();
   int num_rooms    = problem.GetNumRooms();
+  int num_shifts   = problem.GetNumShiftTypes();
+  int num_nurses   = problem.GetNumNurses();
 
   // cotas MMAS: tau_max basado en el mejor coste conocido
   double tau_max = 1.0 / (params.rho * static_cast<double>(best_cost));
@@ -586,6 +607,9 @@ void ACOSolver::UpdatePheromones(PheromoneMatrix& tau_day,
   double evap = 1.0 - params.rho;
   for (double& t : tau_day)  t *= evap;
   for (double& t : tau_room) t *= evap;
+  if (params.use_tau_nurse) {
+    for (double& t : tau_nurse) t *= evap;
+  }
 
   // 2. deposito: delta inversamente proporcional al coste
   double delta = 1.0 / static_cast<double>(best_cost);
@@ -594,6 +618,21 @@ void ACOSolver::UpdatePheromones(PheromoneMatrix& tau_day,
     RoomId r = best_sol.GetPatientRoom(pid);
     tau_day[pid * num_days + d]   += delta;
     tau_room[pid * num_rooms + r] += delta;
+  }
+  // C1: deposito tau_nurse - para cada (room, day, shift) con enfermera
+  // asignada en la mejor solucion, refuerza tau_nurse[shift][nurse]
+  if (params.use_tau_nurse && !tau_nurse.empty()) {
+    for (RoomId r = 0; r < num_rooms; ++r) {
+      for (Day d = 0; d < num_days; ++d) {
+        if (best_sol.GetRoomOccupancy(r, d) == 0) continue;
+        for (Shift s = 0; s < num_shifts; ++s) {
+          NurseId n = best_sol.GetNurseAssignment(r, d, s);
+          if (n != kInvalidId) {
+            tau_nurse[s * num_nurses + n] += delta;
+          }
+        }
+      }
+    }
   }
 
   // 3. cotas [tau_min, tau_max] solo sobre posiciones feasibles
@@ -616,6 +655,13 @@ void ACOSolver::UpdatePheromones(PheromoneMatrix& tau_day,
       }
     }
   }
+
+  // cotas para tau_nurse
+  if (params.use_tau_nurse && !tau_nurse.empty()) {
+    for (double& t : tau_nurse) {
+      if (t > 0.0) t = std::max(tau_min, std::min(tau_max, t));
+    }
+  }
 }
 
 // ============================================================================
@@ -627,9 +673,44 @@ void ACOSolver::UpdatePheromones(PheromoneMatrix& tau_day,
  */
 void ACOSolver::ResetPheromones(PheromoneMatrix& tau_day,
                                  PheromoneMatrix& tau_room,
+                                 PheromoneMatrix& tau_nurse,
                                  const ProblemData& problem,
                                  double tau_init) {
   InitPheromones(tau_day, tau_room, problem, tau_init);
+  if (!tau_nurse.empty()) {
+    InitPheromonesNurse(tau_nurse, problem, tau_init);
+  }
+}
+
+// ============================================================================
+// InitPheromonesNurse (C1)
+// ============================================================================
+
+/** @brief Inicializa tau_nurse[shift_type][nurse] a tau_init en las
+ *         (s, n) donde la enfermera trabaja en al menos un dia con ese shift.
+ *  Las (s, n) infeasibles (la enfermera nunca trabaja ese shift) quedan en 0
+ *  para que nunca se elijan via score = tau^a * eta^b (eta tambien sera 0).
+ */
+void ACOSolver::InitPheromonesNurse(PheromoneMatrix& tau_nurse,
+                                     const ProblemData& problem,
+                                     double tau_init) {
+  std::fill(tau_nurse.begin(), tau_nurse.end(), 0.0);
+  int num_shifts = problem.GetNumShiftTypes();
+  int num_days   = problem.GetNumDays();
+  int num_nurses = problem.GetNumNurses();
+  for (NurseId n = 0; n < num_nurses; ++n) {
+    const Nurse& nurse = problem.GetNurse(n);
+    for (Shift s = 0; s < num_shifts; ++s) {
+      // si la enfermera trabaja ese shift en algun dia, tau_init; si no, 0.
+      bool works = false;
+      for (Day d = 0; d < num_days && !works; ++d) {
+        if (nurse.IsAvailable(d, s)) works = true;
+      }
+      if (works) {
+        tau_nurse[s * num_nurses + n] = tau_init;
+      }
+    }
+  }
 }
 
 // ============================================================================
@@ -648,6 +729,7 @@ void ACOSolver::ResetPheromones(PheromoneMatrix& tau_day,
  */
 void ACOSolver::SeedPheromones(PheromoneMatrix& tau_day,
                                 PheromoneMatrix& tau_room,
+                                PheromoneMatrix& tau_nurse,
                                 const Solution& seed, int seed_cost,
                                 const ProblemData& problem,
                                 const ACOParams& params) {
@@ -656,6 +738,8 @@ void ACOSolver::SeedPheromones(PheromoneMatrix& tau_day,
   int num_patients = problem.GetNumPatients();
   int num_days     = problem.GetNumDays();
   int num_rooms    = problem.GetNumRooms();
+  int num_shifts   = problem.GetNumShiftTypes();
+  int num_nurses   = problem.GetNumNurses();
 
   // mismas cotas que en UpdatePheromones para mantener la coherencia MMAS
   double tau_max = 1.0 / (params.rho * static_cast<double>(seed_cost));
@@ -688,5 +772,146 @@ void ACOSolver::SeedPheromones(PheromoneMatrix& tau_day,
     RoomId r = seed.GetPatientRoom(pid);
     tau_day[pid * num_days + d]   = tau_max;
     tau_room[pid * num_rooms + r] = tau_max;
+  }
+
+  // C1: tau_nurse - bajar todo a tau_min y elevar las nurses del seed.
+  if (params.use_tau_nurse && !tau_nurse.empty()) {
+    for (double& t : tau_nurse) {
+      if (t > 0.0) t = tau_min;
+    }
+    for (RoomId r = 0; r < num_rooms; ++r) {
+      for (Day d = 0; d < num_days; ++d) {
+        if (seed.GetRoomOccupancy(r, d) == 0) continue;
+        for (Shift s = 0; s < num_shifts; ++s) {
+          NurseId n = seed.GetNurseAssignment(r, d, s);
+          if (n != kInvalidId) {
+            tau_nurse[s * num_nurses + n] = tau_max;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
+// GenerateNurseAssignmentsACO (C1) — asignacion de enfermeras guiada por ACO
+// ============================================================================
+
+/** @brief Asigna enfermeras a (room, day, shift) con pacientes/ocupantes
+ *         usando tau_nurse[shift][nurse] como feromona aprendida y una
+ *         eta_nurse dinamica que penaliza skill insuficiente y sobrecarga,
+ *         y bonifica continuidad con el dia anterior.
+ *
+ *  La heuristica eta_nurse se calcula on-the-fly por (room, day, shift)
+ *  porque depende del estado de la solucion en construccion (workload
+ *  acumulado, asignaciones previas). Para mantener determinismo dentro de
+ *  una hormiga, recorremos (room, day) en orden lexicografico y dentro de
+ *  cada room los dias en orden ascendente — asi day-1 ya esta resuelto
+ *  cuando llegamos a day, lo que permite usar continuidad.
+ *
+ *  Score (room, day, shift, nurse) = pow(tau, alpha) * pow(eta, beta).
+ *  Seleccion via SelectByScore (ACS pseudoproporcional con q0).
+ *
+ *  Si no hay candidatos validos (sin enfermera disponible ese turno), la
+ *  celda queda sin asignar; el bug HC13/14 se evita con
+ *  EnsureFullNurseCoverage como respaldo.
+ */
+void ACOSolver::GenerateNurseAssignmentsACO(Solution& solution,
+                                             const PheromoneMatrix& tau_nurse,
+                                             const ProblemData& problem,
+                                             const ACOParams& params,
+                                             std::mt19937& rng) {
+  int num_rooms  = problem.GetNumRooms();
+  int num_days   = problem.GetNumDays();
+  int num_shifts = problem.GetNumShiftTypes();
+  int num_nurses = problem.GetNumNurses();
+
+  for (RoomId r = 0; r < num_rooms; ++r) {
+    for (Day d = 0; d < num_days; ++d) {
+      if (solution.GetRoomOccupancy(r, d) == 0) continue;
+
+      for (Shift s = 0; s < num_shifts; ++s) {
+        // si ya hay enfermera asignada por una hormiga anterior, no tocar
+        // (solo aplica en flujos donde se reutilice una solucion semilla)
+        if (solution.GetNurseAssignment(r, d, s) != kInvalidId) continue;
+
+        // candidatos: enfermeras disponibles y compatibles
+        std::vector<NurseId> candidates;
+        std::vector<double>  scores;
+        candidates.reserve(num_nurses);
+        scores.reserve(num_nurses);
+
+        NurseId prev_nurse = (d > 0) ? solution.GetNurseAssignment(r, d - 1, s)
+                                      : kInvalidId;
+        const auto& room_pats = solution.GetRoomPatients(r, d);
+
+        for (NurseId n = 0; n < num_nurses; ++n) {
+          double tau = tau_nurse[s * num_nurses + n];
+          if (tau <= 0.0) continue;  // (s, n) infeasible aprendido en init
+          if (!FeasibilityChecker::IsFeasibleNurseAssignment(solution, n, r,
+                                                             d, s)) {
+            continue;
+          }
+
+          // eta_nurse: heuristica dinamica
+          // - skill insuficiente: penalty alta (cuanto mas deficit, peor)
+          // - sobrecarga prevista: penalty proporcional al exceso
+          // - continuidad con d-1: bonus si es la misma enfermera
+          double penalty = 0.0;
+          const Nurse& nurse = problem.GetNurse(n);
+          SkillLevel nurse_skill = nurse.GetSkillLevel();
+
+          for (PatientId pid : room_pats) {
+            Day adm = solution.GetPatientAdmissionDay(pid);
+            int day_in_stay = d - adm;
+            SkillLevel req =
+                problem.GetPatient(pid).GetSkillLevelAt(day_in_stay, s);
+            if (nurse_skill < req) penalty += (req - nurse_skill) * 10.0;
+          }
+          for (const auto& occ : problem.GetOccupants()) {
+            if (occ.GetRoomId() == r && occ.IsPresentOnDay(d)) {
+              SkillLevel req = occ.GetSkillLevelAt(d, s);
+              if (nurse_skill < req) penalty += (req - nurse_skill) * 10.0;
+            }
+          }
+
+          // sobrecarga (current_workload del turno + carga que añadiriamos)
+          int current_workload = solution.GetNurseWorkload(n, d, s);
+          int added_workload = 0;
+          for (PatientId pid : room_pats) {
+            Day adm = solution.GetPatientAdmissionDay(pid);
+            int day_in_stay = d - adm;
+            added_workload +=
+                problem.GetPatient(pid).GetWorkloadAt(day_in_stay, s);
+          }
+          for (const auto& occ : problem.GetOccupants()) {
+            if (occ.GetRoomId() == r && occ.IsPresentOnDay(d)) {
+              added_workload += occ.GetWorkloadAt(d, s);
+            }
+          }
+          int max_load = nurse.GetMaxWorkload(d, s);
+          if (current_workload + added_workload > max_load) {
+            penalty += (current_workload + added_workload - max_load) * 1.0;
+          }
+
+          // continuidad: bonus si misma nurse que d-1
+          double bonus = 0.0;
+          if (n == prev_nurse && prev_nurse != kInvalidId) bonus = 5.0;
+
+          double eta = (1.0 + bonus) / (1.0 + penalty);
+          double score = std::pow(tau, params.alpha) *
+                          std::pow(eta, params.beta);
+          candidates.push_back(n);
+          scores.push_back(score);
+        }
+
+        if (candidates.empty()) continue;  // EnsureFullNurseCoverage hara fallback
+
+        int idx = SelectByScore(scores, params.q0, rng);
+        if (idx >= 0 && idx < static_cast<int>(candidates.size())) {
+          solution.AssignNurse(candidates[idx], r, d, s);
+        }
+      }
+    }
   }
 }
