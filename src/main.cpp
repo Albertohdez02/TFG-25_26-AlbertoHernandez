@@ -119,7 +119,8 @@ int main(int argc, char* argv[]) {
 
   // Construir configs segun preset
   VNSConfig vns_cfg;  // default agresivo (Bloque A)
-  bool legacy = (preset == "legacy");
+  bool legacy   = (preset == "legacy");
+  bool preset_ab = (preset == "ab");  // A+B sin C (use_tau_nurse=false)
   if (legacy) {
     vns_cfg = MakeLegacyVNSConfig();
   }
@@ -154,9 +155,11 @@ int main(int argc, char* argv[]) {
     std::cout << "  Reinicios multi-start: " << num_restarts << "\n";
   }
   std::cout << "  Tiempo global maximo: " << global_time_s << " s\n";
-  std::cout << "  Preset: " << preset
-            << (legacy ? " (caps duros, heuristicas pobres)"
-                       : " (Bloque A+B mejoras activas)") << "\n";
+  std::cout << "  Preset: " << preset;
+  if (legacy)         std::cout << " (caps duros, heuristicas pobres)";
+  else if (preset_ab) std::cout << " (Bloque A+B activos, C off)";
+  else                std::cout << " (Bloque A+B+C activos)";
+  std::cout << "\n";
 
 
   // PASO 2: Busqueda de la mejor solucion (ACO+VNS o multi-start greedy+ILS)
@@ -182,6 +185,9 @@ int main(int argc, char* argv[]) {
       aco_params.rich_eta_room = false;
       aco_params.rich_eta_day  = false;
       aco_params.adaptive_warm_start = false;
+      aco_params.use_tau_nurse = false;
+    } else if (preset_ab) {
+      // A+B activos (defaults) pero C off
       aco_params.use_tau_nurse = false;
     }
     aco_params.vns_config = vns_cfg;

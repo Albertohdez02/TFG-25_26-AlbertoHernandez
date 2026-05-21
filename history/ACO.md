@@ -1141,10 +1141,163 @@ Flags: `ACOParams::rich_eta_room`, `rich_eta_day`, `adaptive_warm_start`. Por de
 - CLI: `./ihtc_solver ... aco 12 ils default` (todos los flags A+B activos) vs `./ihtc_solver ... aco 12 ils legacy` (comportamiento pre-Bloque-A).
 - Snapshot pre-mejoras: `solutions_aco_postfix/`, `tables/aco-random-comparison-postfix.csv`.
 
-### 18.7 Bloque C — Pendiente de evaluación
+### 18.7 Bloque C — τ_nurse + GenerateNurseAssignmentsACO
 
-Según criterios del plan: el Bloque C (`τ_nurse` + `GenerateNurseAssignmentsACO`) se activa solo si tras A+B:
-- Gap medio sigue > 35 %, **o**
-- Componentes `continuity_of_care + nurse_workload` siguen > 30 % del coste total en i22.
+**Criterio de activación cumplido**: spot-check 3 instancias (i08, i22, i27) tras A+B mostró que en i22 los componentes `continuity_of_care + nurse_workload = 36,405 = 40.6 % del coste total`, > 30 % del umbral del plan.
 
-Pendiente medir benchmark A+B para decidir.
+#### C1 — Matriz `τ_nurse[shift_type][nurse]`
+
+Dimensión escogida: `[shift_type][nurse]` aplanada. Para i22 con N=32: 3 × 32 = **96 doubles** (~800 B), viable. Alternativa `[room][day][shift][nurse]` sería 37,632 celdas en i22, demasiado para aprender en 10 min.
+
+Rol del modelo:
+- Aprende "qué enfermeras tienden a estar en buenas soluciones para cada turno", sin importar la habitación específica.
+- La habitación-específico viene de la heurística dinámica `eta_nurse(n, r, d, s)`.
+
+`eta_nurse` se calcula on-the-fly por (room, day, shift) durante la construcción:
+- Penalty por skill insuficiente: `(required − nurse_skill) × 10` (mismo factor que el greedy clásico).
+- Penalty por sobrecarga: `excess_workload × 1`.
+- Bonus por continuidad: si la nurse coincide con (room, day-1, shift), `bonus = 5`.
+- Score final: `score = pow(τ, α) × pow(eta, β)`.
+
+Selección via `SelectByScore` (ACS pseudo-proporcional q0=0.90).
+
+#### C2 — Integración en el bucle ACO
+
+| Función | Cambio |
+|---|---|
+| `InitPheromonesNurse` (nueva) | Inicializa τ_init solo en (s, n) donde la enfermera trabaja ese turno en algún día |
+| `UpdatePheromones` | Evapora τ_nurse globalmente; deposita Δ por cada nurse asignada en best_sol; aplica cotas [τ_min, τ_max] |
+| `ResetPheromones` | Reinicializa τ_nurse junto con τ_day/τ_room ante stagnación |
+| `SeedPheromones` | Baja τ_nurse a τ_min y eleva a τ_max las (s, n) del seed |
+| `ConstructSolution` | Si `use_tau_nurse=true`, llama a `GenerateNurseAssignmentsACO` en vez del greedy clásico |
+
+`GenerateNurseAssignmentsACO` se invoca después de las asignaciones de pacientes (mismo orden que el greedy clásico). `EnsureFullNurseCoverage` sigue como respaldo: si para algún (r, d, s) no hay candidatos válidos, la cobertura queda sin asignar y el patch idempotente la cubre tras la construcción.
+
+#### Smoke spot
+
+- i01 60 s: 4,625 (A solo) → **4,412** (A+B+C) = **−4.6 %**
+
+Sugiere que el Bloque C ayuda incluso a corto plazo. Pendiente benchmark completo 30 instancias 600 s para confirmar.
+
+#### Flags
+
+- `ACOParams::use_tau_nurse = true` (default Bloque C activo).
+- `preset=legacy` desactiva A+B+C.
+
+#### Ficheros nuevos / modificados en C
+
+| Path | Acción |
+|---|---|
+| [src/solver/ACOSolver.h](../src/solver/ACOSolver.h) | Nuevo flag `use_tau_nurse`; firmas extendidas de `Init/Update/Reset/Seed/ConstructSolution`; nueva `GenerateNurseAssignmentsACO` y `InitPheromonesNurse` |
+| [src/solver/ACOSolver.cpp](../src/solver/ACOSolver.cpp) | C1: matriz `tau_nurse`, deposit/evaporate, init filtrado por shift; nueva `GenerateNurseAssignmentsACO` (~80 líneas) con scoring ACS |
+| [src/main.cpp](../src/main.cpp) | Legacy preset desactiva `use_tau_nurse` |
+
+---
+
+## 19. Sesión 2026-05-21 — Resultados Bloque A+B+C y Fase F (Plan II)
+
+### 19.1 Benchmark Bloque A+B+C (30 instancias, 600 s, validador oficial)
+
+| | Total | Gap medio | Wins vs postfix |
+|---|---|---|---|
+| postfix (línea base, evaluador post-fix) | 1,038,478 | +44.93 % | — |
+| A+B (sin C, preset=ab) | 1,039,950 | +45.13 % | 20/30 |
+| **A+B+C (preset=default)** | **1,037,932** | **+44.85 %** | **23/30** |
+
+**Mejora agregada A+B+C vs postfix: −0.05 % (insignificante)**, pero 2 regresiones grandes la anulan: **i19 +4982** y **i23 +3977**. Sin ellas, A+B+C habría sido −0.85 % (mejora real pero modesta).
+
+Diagnóstico: con un solo seed, las mejoras tienen efecto desigual; las regresiones absorben las ganancias del resto. Necesitaría multi-seed para significancia estadística.
+
+Tablas: [tables/aco-blockABC-vs-postfix.csv](../tables/aco-blockABC-vs-postfix.csv), [tables/aco-AB-vs-ABC-vs-postfix.csv](../tables/aco-AB-vs-ABC-vs-postfix.csv).
+
+### 19.2 Auditoría del estancamiento
+
+Con A+B+C ya implementados pero gap aún +44.85 %, se hizo una nueva auditoría que identificó las causas estructurales:
+
+1. **Operadores demasiado atómicos** para un problema acoplado (mover X requiere mover Y).
+2. **Enfermeras desacopladas** de pacientes en la VNS.
+3. **Opcionales atrapados en saturación** (92-98 sin programar en i22/i27 = 47-49 % del coste).
+4. **Perturbación tímida** para escapar valles profundos.
+5. **Feromona-trampa** del ACO (atractores locales).
+6. **Sin delta-eval** → cada candidato recalcula 12 componentes.
+
+Sin un operador macro o un esquema de delta-cost, más tiempo (1200 s) apenas mueve la aguja (medido en i22: −1.8 %).
+
+### 19.3 Estudio del repo IMADA (1º open-source / 2º absoluto del IHTC 2024)
+
+Análisis de https://github.com/Arthod/ihtc2024-imada-submission identifica patrones que abordan exactamente las causas:
+
+| Patrón IMADA | Aplicación a nuestro código |
+|---|---|
+| `MoveChain` compone movimientos atómicos | Compound moves para opcionales/continuity |
+| `KickPatient` (desaloja para insertar) | Ataque directo al cuello de botella ElectiveUnscheduled |
+| 16 perturbadores con weights adaptativos | Diversidad de escape |
+| Dos temperaturas SA (hard/soft) | Aceptación selectiva |
+| `EvaluateDelta(Move)` con 25+ cachés | Velocidad x10–x100 |
+
+### 19.4 Fase F (Plan II) — Movimientos compuestos
+
+Implementados 3 compound moves en [src/solver/CompoundMoves.cpp](../src/solver/CompoundMoves.cpp) (nuevo):
+
+- **`TryKickPatient`**: para cada opcional sin programar, busca un (room, day, ot) infactible, identifica al paciente bloqueante, lo desaloja, mete el opcional, reubica el bloqueante en su ventana. Cadena de 3 movs atómicos con snapshot/rollback.
+- **`TryReorganizeDay`**: identifica los 3 días con más overtime de cirujano u OT, desasigna todos sus pacientes y los reasigna por slack ascendente.
+- **`TrySwapNurseBlock`**: intercambia la nurse asignada a (room1, days[d..d+k], shift) con (room2, days[d..d+k], shift) para k=3 días consecutivos.
+
+Cada compound: `Solution snapshot = solution; aplicar cadena; if (new_cost < current_cost) commit; else solution = move(snapshot)`.
+
+Integración: `LocalSearch::Run` extendido a 11 operadores (8 atómicos + 3 compuestos). `VNSConfig::enable_compound = true` (default). `preset=legacy` los desactiva.
+
+### 19.5 Resultados Fase F (30 instancias, 600 s)
+
+| Versión | Total | Gap vs best | Wins vs postfix |
+|---|---|---|---|
+| postfix | 1,038,478 | +44.93 % | — |
+| A+B+C | 1,037,932 | +44.85 % | 23/30 |
+| **A+B+C+F (compound)** | **1,007,950** | **+40.67 %** | **26/30** |
+
+**Mejora F vs A+B+C: −2.89 % (−29,982 puntos en total).**
+**Gap medio: +44.85 % → +40.67 % (−4.2 puntos porcentuales).**
+
+Mejoras grandes por instancia vs A+B+C:
+- **i11: −10.6 %** (30,980 → 27,694)
+- **i29: −13.2 %** (21,731 → 18,862)
+- **i10: −7.0 %** (27,665 → 25,740)
+- **i18: −6.2 %** (47,973 → 45,022)
+- **i14: −5.3 %** (14,042 → 13,297)
+- **i27: −4.3 %** (97,180 → 92,973)
+- **i13: −5.0 %** (24,187 → 22,982)
+
+Sólo 4 regresiones pequeñas: i02 +20, i07 +145, i16 +639, **i19 +2,186** (sigue siendo problemática).
+
+Tabla completa: [tables/aco-blockF-vs-ABC-vs-postfix.csv](../tables/aco-blockF-vs-ABC-vs-postfix.csv).
+
+### 19.6 Lectura clave
+
+- **Las mejoras A+B+C fueron casi placebo** (−0.05 % agregado). Era refinar lo que ya funcionaba.
+- **La Fase F atacó el cuello de botella estructural** (operadores atómicos vs problema acoplado) y produjo **40× más mejora** que A+B+C juntos.
+- KickPatient y ReorganizeDay están atacando ElectiveUnscheduled y overtime; SwapNurseBlock está atacando continuity_of_care.
+- **i19 sigue siendo regresión** desde A+B+C; probable origen en algún operador del Bloque A; queda pendiente diagnóstico focal.
+
+### 19.7 Ficheros nuevos / modificados en sesión
+
+| Path | Acción |
+|---|---|
+| [src/solver/CompoundMoves.h](../src/solver/CompoundMoves.h) | **Nuevo**: declaración de los 3 compound moves |
+| [src/solver/CompoundMoves.cpp](../src/solver/CompoundMoves.cpp) | **Nuevo**: implementación con snapshot/rollback |
+| [src/solver/LocalSearch.h](../src/solver/LocalSearch.h) | `kOperatorNames` extendido a 11; `op_improvements` a 16; flag `enable_compound` en `VNSConfig` |
+| [src/solver/LocalSearch.cpp](../src/solver/LocalSearch.cpp) | `all_ops` extendido a 11; activación condicional de compounds |
+| [src/ablation_test.cpp](../src/ablation_test.cpp) | `op_improvements` ajustado a 16 elementos |
+| [CMakeLists.txt](../CMakeLists.txt) | Añadido `CompoundMoves.cpp` a SOLVER_SOURCES |
+| [scripts/analyze_blockF.py](../scripts/analyze_blockF.py) | **Nuevo**: comparativa F vs ABC vs postfix |
+| [scripts/analyze_blockABC.py](../scripts/analyze_blockABC.py) | **Nuevo**: análisis ABC |
+| [scripts/analyze_AB_vs_ABC.py](../scripts/analyze_AB_vs_ABC.py) | **Nuevo**: 3-way (postfix vs AB vs ABC) |
+| [tables/aco-blockF-vs-ABC-vs-postfix.csv](../tables/aco-blockF-vs-ABC-vs-postfix.csv) | Resultados Fase F |
+
+### 19.8 Plan siguiente
+
+**Fase E (delta-eval)** del Plan II queda pendiente. Decisión actual: implementarla. Razones:
+- F demostró que el problema **estaba en los operadores**, no en el evaluator. Pero ahora con compounds que aplican varios movs, **acelerar evaluator x5-x10 permite que la VNS converja más rápido** y los compounds prueben más posiciones.
+- Delta-eval no aporta para los compounds (que cambian muchos a la vez), pero sí para los 8 atómicos que siguen siendo la espina dorsal de la búsqueda.
+- Es trabajo "mecánico" (correctness verificable con assert vs full eval), bajo riesgo de regresión.
+
+Objetivo: bajar gap a +35 % o menos.
