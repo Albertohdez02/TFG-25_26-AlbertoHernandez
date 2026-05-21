@@ -78,6 +78,7 @@ set(SOLVER_SOURCES
     src/solver/ACOSolver.cpp
     src/solver/ALNSPerturbation.cpp
     src/solver/CompoundMoves.cpp
+    src/solver/NursePolisher.cpp
 )
 
 # =============================================================================

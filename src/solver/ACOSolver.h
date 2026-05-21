@@ -63,6 +63,12 @@ struct ACOParams {
   // para cada turno: 3 * N doubles (~96 en i22), tamano viable.
   bool   use_tau_nurse = true;
 
+  // Some-touches Fase 1: fase final de pulido de la matriz de enfermeras
+  // (tabu/hill climbing dedicado). Se ejecuta tras el bucle ACO principal,
+  // con su propio presupuesto de tiempo. 0 = desactivada.
+  // Default: 10% del tiempo total (clamp 30s-120s).
+  double nurse_polish_budget_s = 60.0;
+
   // Configuracion de la VNS (caps, exhaustive, refresh nurses, etc.).
   // Default = agresivo (Bloque A activo). Para legacy, pasar el resultado
   // de MakeLegacyVNSConfig() en main.cpp.

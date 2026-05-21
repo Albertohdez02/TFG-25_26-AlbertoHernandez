@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iostream>
 #include <limits>
 #include <numeric>
 #include <thread>
@@ -21,6 +22,7 @@
 #include "../evaluator/Evaluator.h"
 #include "../evaluator/FeasibilityChecker.h"
 #include "LocalSearch.h"
+#include "NursePolisher.h"
 #include "RandomGenerator.h"
 
 // ============================================================================
@@ -43,7 +45,16 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
     return std::chrono::duration<double>(
                std::chrono::steady_clock::now() - t0).count();
   };
-  auto remaining_s = [&]() { return time_limit_s - elapsed_s(); };
+  // Some-touches Fase 1: reservamos una porcion del tiempo total para la
+  // fase final de pulido de enfermeras. El bucle ACO se ejecuta dentro de
+  // (time_limit_s - polish_budget); el polisher al final usa polish_budget.
+  // Acotamos: minimo 30s util de polisher, maximo 30% del tiempo total.
+  double polish_budget = params.nurse_polish_budget_s;
+  if (polish_budget > 0.0) {
+    polish_budget = std::clamp(polish_budget, 30.0, time_limit_s * 0.30);
+  }
+  double aco_time_budget = time_limit_s - polish_budget;
+  auto remaining_s = [&]() { return aco_time_budget - elapsed_s(); };
 
   int num_patients = problem.GetNumPatients();
   int num_days     = problem.GetNumDays();
@@ -201,6 +212,28 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
       ResetPheromones(tau_day, tau_room, tau_nurse, problem, params.tau_init);
       stagnation_count = 0;
     }
+  }
+
+  // Some-touches Fase 1 - Pulido final dedicado a enfermeras.
+  // Se ejecuta sobre la mejor solucion factible encontrada, dentro de un
+  // presupuesto separado (params.nurse_polish_budget_s). El presupuesto
+  // sale del tiempo "guardado" para esta fase (el bucle ACO usa
+  // time_limit_s - polish_budget; la convencion es que el caller le pase
+  // un time_limit_s descontando el polish_budget, o internamente
+  // recortamos el bucle ACO. Aqui se asume que el time_limit_s original
+  // YA incluye el polish_budget, por lo que el bucle puede haber
+  // sobrepasado su parte; usamos cualquier remaining_s positivo o el
+  // budget configurado).
+  if (params.nurse_polish_budget_s > 0.0 &&
+      best_cost < std::numeric_limits<int>::max()) {
+    double polish_budget = params.nurse_polish_budget_s;
+    int before = best_cost;
+    int improvements =
+        NursePolisher::Polish(best_solution, polish_budget, rng);
+    int after = Evaluator::Evaluate(best_solution);
+    if (after < best_cost) best_cost = after;
+    std::cout << "  Nurse polish: " << before << " -> " << after
+              << " (" << improvements << " mejoras)\n";
   }
 
   return best_solution;
