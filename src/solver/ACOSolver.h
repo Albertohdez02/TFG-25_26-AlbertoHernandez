@@ -69,6 +69,38 @@ struct ACOParams {
   // Default: 10% del tiempo total (clamp 30s-120s).
   double nurse_polish_budget_s = 60.0;
 
+  // Some-touches Fase 2: anti-convergencia del ACO. Cuatro cambios para
+  // mitigar que las hormigas caigan consistentemente en los mismos
+  // valles locales (sintoma observado en i19, i23).
+  //
+  // 2.1: q0 dinamico. Arranca en q0_initial y baja linealmente a q0_final
+  //      con el tiempo. Mas exploracion temprana, exploitation final.
+  //      Si q0_dynamic=false, se usa q0 fijo (compatibilidad).
+  bool   q0_dynamic = true;
+  double q0_initial = 0.90;
+  double q0_final   = 0.70;
+
+  // 2.2: tau_min calculado con factor mayor para mas contraste MMAS.
+  //      tau_min = tau_max / (tau_min_factor * num_patients).
+  //      Default actual implicito era 2; default Fase 2 = 50 (ratio
+  //      ~25x menor, mas exploracion).
+  int    tau_min_factor = 50;
+
+  // 2.3: reset suave en stagnation. Si soft_reset=true, en lugar de
+  //      resetear a tau_init uniforme, multiplica todas las entradas por
+  //      soft_reset_factor (preserva aprendizaje parcial). Tras N resets
+  //      suaves consecutivos sin mejora global, hace reset duro.
+  bool   soft_reset = true;
+  double soft_reset_factor = 0.5;
+  int    soft_resets_before_hard = 2;
+
+  // 2.4: SeedPheromones menos dominante. Si seed_dampen=true, las
+  //      decisiones del seed reciben seed_dampen_factor * tau_min en
+  //      lugar de tau_max. Reduce el riesgo de que las hormigas
+  //      tempranas clonen al seed casi exactamente.
+  bool   seed_dampen = true;
+  double seed_dampen_factor = 3.0;  // 3 * tau_min
+
   // Configuracion de la VNS (caps, exhaustive, refresh nurses, etc.).
   // Default = agresivo (Bloque A activo). Para legacy, pasar el resultado
   // de MakeLegacyVNSConfig() en main.cpp.

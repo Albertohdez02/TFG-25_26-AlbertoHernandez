@@ -223,25 +223,82 @@ Tabla: [`tables/aco-polish-vs-ABCF-vs-postfix.csv`](tables/aco-polish-vs-ABCF-vs
 
 ---
 
-## Fase 2 — Anti-convergencia ACO (pendiente)
+## Fase 2 — Anti-convergencia ACO (en curso)
 
 ### 2.1 Diagnóstico previo
 
-Síntomas observados de convergencia prematura:
-- i19 e i23 son atractores locales **consistentes** en todos los regímenes probados (postfix, ABC, ABCF, 1800 s).
+Síntomas observados de convergencia prematura tras Fase 1:
+- i19 e i23 son atractores locales **consistentes** en todos los regímenes probados (postfix, ABC, ABCF, ABCF+Polish, 1800 s). i19 sigue siendo regresión vs postfix (+5,819 con Polish) aunque el Polish ya la mejoró un poco.
 - Las hormigas tempranas tras `SeedPheromones` clonan el seed casi exactamente debido a `q0=0.90` + `τ_max` en seed.
 - El reset por estancamiento es **brusco** (vuelta a τ_init uniforme), perdiendo todo el aprendizaje.
+- El ratio `τ_min/τ_max = 1/(2·n_patients)` es **demasiado alto** comparado con la recomendación MMAS clásica.
 
-### 2.2 Cambios propuestos
+### 2.2 Cuatro cambios implementados (con flags individuales)
 
-| # | Cambio | Justificación |
-|---|---|---|
-| 2.1 | `q0` decreciente: arrancar en 0.90 y bajar linealmente a 0.70 conforme avanza el tiempo | Más exploración temprana, exploitation final |
-| 2.2 | `τ_min = τ_max / (n × avg_branching)` con avg_branching estimado de (días × habs feasibles) | Más contraste, evita uniformidad |
-| 2.3 | Reset suave: en stagnation, multiplicar τ por 0.5 en vez de resetear a τ_init | Preserva aprendizaje parcial |
-| 2.4 | Eliminar τ_max en seed; usar 3× τ_min en su lugar | Reduce dominancia del seed en las primeras iteraciones |
+#### 2.2.1 `q0` dinámico (decreciente)
 
-(Diseño detallado tras Fase 1.)
+`q0` arranca en `q0_initial = 0.90` y baja linealmente a `q0_final = 0.70` conforme transcurre el tiempo del bucle ACO. Cálculo:
+```cpp
+double frac = clamp(elapsed_s / aco_time_budget, 0.0, 1.0);
+ant_params.q0 = q0_initial - (q0_initial - q0_final) * frac;
+```
+
+**Implementación**: cada iteración del bucle ACO recalcula `q0` y lo pasa a `ConstructSolution` via una copia `ant_params` (no toca `params` original — compatible con paralelismo).
+
+**Justificación**: la convergencia prematura viene de elegir `argmax` el 90 % del tiempo desde el principio. Si arrancamos con más exploración (q0=0.90 al inicio puede parecer alto pero baja conforme avanza), las primeras hormigas diversifican más.
+
+**Flag**: `ACOParams::q0_dynamic = true` (default activo). Si `false`, usa `params.q0` fijo (compatibilidad legacy).
+
+#### 2.2.2 `tau_min_factor` (más contraste MMAS)
+
+Antes: `tau_min = tau_max / (2 × num_patients)`. En i22 con 174 pacientes → ratio 1/348.
+
+Después: `tau_min = tau_max / (tau_min_factor × num_patients)` con `tau_min_factor = 50` (default). En i22 → ratio 1/8700 (×25 menos uniforme).
+
+**Justificación**: MMAS clásico recomienda `τ_min` muy por debajo de `τ_max` para crear contraste real. El ratio anterior hacía que prácticamente todas las posiciones feasibles tuvieran feromona similar, lo que combinado con `q0=0.90` no diferenciaba.
+
+**Flag**: `ACOParams::tau_min_factor = 50` (default). Coherente entre `UpdatePheromones` y `SeedPheromones`.
+
+#### 2.2.3 Reset suave por estancamiento
+
+Antes: al llegar a `stagnation_k = 15` iteraciones sin mejora, `ResetPheromones` ponía todo a `tau_init` uniforme (perdiendo el aprendizaje).
+
+Después: secuencia escalonada
+1. **Primer reset suave** (cuando `stagnation_count >= stagnation_k`): multiplicar todas las τ por `soft_reset_factor = 0.5`. Conserva proporciones aprendidas pero acerca todas las entradas a τ_min, lo que aumenta exploración relativa.
+2. **Segundo reset suave** consecutivo (si tras el primero no hay mejora en otros `stagnation_k` iters): otra multiplicación por 0.5.
+3. **Reset duro** tras `soft_resets_before_hard = 2` resets suaves consecutivos sin mejora: vuelta a `tau_init` uniforme (último recurso).
+
+El contador `soft_reset_count` se resetea a 0 cada vez que aparece una mejora global (`stagnation_count == 0`).
+
+**Flag**: `ACOParams::soft_reset = true` (default). `soft_reset_factor`, `soft_resets_before_hard` configurables.
+
+#### 2.2.4 `seed_dampen`: SeedPheromones menos dominante
+
+Antes: las decisiones del seed recibían `tau_max`. Resto de posiciones feasibles → `tau_min`. Esto creaba un contraste **máximo** que, combinado con `q0=0.90`, hacía que las hormigas tempranas clonaran al seed casi exactamente.
+
+Después: las decisiones del seed reciben `seed_value = seed_dampen_factor × tau_min` (default `3 × tau_min`). Sigue dando ventaja al seed (3× el resto) pero **mucho menor** que `tau_max`. Las hormigas exploran alrededor en lugar de copiar.
+
+**Flag**: `ACOParams::seed_dampen = true` (default). `seed_dampen_factor = 3.0` por defecto.
+
+### 2.3 Implementación
+
+Ficheros modificados:
+- [`src/solver/ACOSolver.h`](src/solver/ACOSolver.h) — 8 flags nuevos en `ACOParams` (4 booleanos + 4 numéricos).
+- [`src/solver/ACOSolver.cpp`](src/solver/ACOSolver.cpp):
+  - Bucle principal: nueva variable `ant_params` con `q0` dinámico.
+  - Tras el bucle: lógica de reset suave/duro con contador `soft_reset_count`.
+  - `UpdatePheromones`: `tau_min` con `tau_min_factor`.
+  - `SeedPheromones`: idem + `seed_value` calculado con `seed_dampen`.
+
+### 2.4 Resultados
+
+#### 2.4.1 Spot-check i19, i22, i27 600 s
+
+(Pendiente — corriendo en background, ~30 min.)
+
+#### 2.4.2 Benchmark agregado 30 instancias
+
+(Pendiente.)
 
 ---
 

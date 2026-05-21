@@ -117,9 +117,23 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
     }
   }
 
+  // Fase 2.3: contador de resets suaves consecutivos para decidir cuando
+  // hacer un reset duro (a tau_init uniforme).
+  int soft_reset_count = 0;
+
   while (remaining_s() > 2.0) {
     int iteration_best_cost = std::numeric_limits<int>::max();
     Solution iteration_best(problem);
+
+    // Fase 2.1: q0 dinamico. Arranca en q0_initial, baja linealmente a
+    // q0_final con el tiempo transcurrido. Mas exploracion temprana,
+    // exploitation final.
+    ACOParams ant_params = params;  // copia para modificar q0 sin tocar params
+    if (params.q0_dynamic) {
+      double frac = std::clamp(elapsed_s() / aco_time_budget, 0.0, 1.0);
+      ant_params.q0 = params.q0_initial -
+                       (params.q0_initial - params.q0_final) * frac;
+    }
 
     // tiempo por hormiga: con paralelismo, las hormigas de un mismo batch
     // corren simultaneamente, asi que el tiempo "lineal" disponible escala
@@ -162,7 +176,8 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
           //    tau y eta son const en este bloque)
           Solution candidate = ConstructSolution(tau_day, tau_room, tau_nurse,
                                                  eta_day, eta_room,
-                                                 problem, params, local_rng);
+                                                 problem, ant_params,
+                                                 local_rng);
           // 2. mejora con VNS (tiempo fijo por batch)
           LocalSearchStats st = LocalSearch::Run(
               candidate, max_ls_iter, local_rng, batch_ls_time,
@@ -207,10 +222,32 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
 
     ++stagnation_count;
 
-    // 6. reinicializar feromonas si no hay mejora global en stagnation_k iters
+    // 6. Fase 2.3: reset suave/duro segun config.
+    // Cuando hay estancamiento, primero hacer reset suave (multiplicar tau
+    // por soft_reset_factor) para preservar aprendizaje parcial. Tras N
+    // resets suaves consecutivos sin mejora global, hacer reset duro
+    // (vuelta a tau_init).
     if (stagnation_count >= params.stagnation_k) {
-      ResetPheromones(tau_day, tau_room, tau_nurse, problem, params.tau_init);
+      if (params.soft_reset &&
+          soft_reset_count < params.soft_resets_before_hard) {
+        // Reset suave: multiplicar todas las entradas factibles por factor
+        double f = params.soft_reset_factor;
+        for (double& t : tau_day)  if (t > 0.0) t *= f;
+        for (double& t : tau_room) if (t > 0.0) t *= f;
+        if (params.use_tau_nurse) {
+          for (double& t : tau_nurse) if (t > 0.0) t *= f;
+        }
+        ++soft_reset_count;
+      } else {
+        // Reset duro: vuelta a tau_init uniforme
+        ResetPheromones(tau_day, tau_room, tau_nurse, problem,
+                         params.tau_init);
+        soft_reset_count = 0;
+      }
       stagnation_count = 0;
+    } else if (stagnation_count == 0) {
+      // Hubo mejora global en esta iteracion: resetear contador soft
+      soft_reset_count = 0;
     }
   }
 
@@ -632,9 +669,13 @@ void ACOSolver::UpdatePheromones(PheromoneMatrix& tau_day,
   int num_shifts   = problem.GetNumShiftTypes();
   int num_nurses   = problem.GetNumNurses();
 
-  // cotas MMAS: tau_max basado en el mejor coste conocido
+  // cotas MMAS: tau_max basado en el mejor coste conocido.
+  // Fase 2.2: tau_min_factor controla el ratio tau_min/tau_max. Mayor =
+  // mas contraste = mas exploracion. Default Fase 2: 50 (antes implicito 2).
   double tau_max = 1.0 / (params.rho * static_cast<double>(best_cost));
-  double tau_min = tau_max / (2.0 * static_cast<double>(num_patients));
+  int tmf = std::max(1, params.tau_min_factor);
+  double tau_min = tau_max /
+      (static_cast<double>(tmf) * static_cast<double>(num_patients));
 
   // 1. evaporacion global
   double evap = 1.0 - params.rho;
@@ -776,7 +817,16 @@ void ACOSolver::SeedPheromones(PheromoneMatrix& tau_day,
 
   // mismas cotas que en UpdatePheromones para mantener la coherencia MMAS
   double tau_max = 1.0 / (params.rho * static_cast<double>(seed_cost));
-  double tau_min = tau_max / (2.0 * static_cast<double>(num_patients));
+  // Fase 2.2: tau_min_factor controla el ratio. Coherente con UpdatePheromones.
+  int tmf = std::max(1, params.tau_min_factor);
+  double tau_min = tau_max /
+      (static_cast<double>(tmf) * static_cast<double>(num_patients));
+  // Fase 2.4: seed_dampen. Si activo, las decisiones del seed reciben
+  // dampen_factor * tau_min en lugar de tau_max. Reduce la dominancia del
+  // seed sobre las primeras hormigas (clonado quasi-determinista).
+  double seed_value = params.seed_dampen
+      ? params.seed_dampen_factor * tau_min
+      : tau_max;
 
   // todas las posiciones feasibles arrancan en tau_min (el resto sigue en 0.0
   // tras InitPheromones porque son infeasibles y deben permanecer asi)
@@ -799,12 +849,13 @@ void ACOSolver::SeedPheromones(PheromoneMatrix& tau_day,
     }
   }
 
-  // las decisiones del seed se elevan a tau_max
+  // las decisiones del seed se elevan a seed_value
+  // (Fase 2.4: seed_value = 3*tau_min si seed_dampen, sino tau_max).
   for (PatientId pid : seed.GetScheduledPatients()) {
     Day    d = seed.GetPatientAdmissionDay(pid);
     RoomId r = seed.GetPatientRoom(pid);
-    tau_day[pid * num_days + d]   = tau_max;
-    tau_room[pid * num_rooms + r] = tau_max;
+    tau_day[pid * num_days + d]   = seed_value;
+    tau_room[pid * num_rooms + r] = seed_value;
   }
 
   // C1: tau_nurse - bajar todo a tau_min y elevar las nurses del seed.
@@ -818,7 +869,7 @@ void ACOSolver::SeedPheromones(PheromoneMatrix& tau_day,
         for (Shift s = 0; s < num_shifts; ++s) {
           NurseId n = seed.GetNurseAssignment(r, d, s);
           if (n != kInvalidId) {
-            tau_nurse[s * num_nurses + n] = tau_max;
+            tau_nurse[s * num_nurses + n] = seed_value;
           }
         }
       }
