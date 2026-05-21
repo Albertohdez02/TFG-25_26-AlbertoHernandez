@@ -1301,3 +1301,51 @@ Tabla completa: [tables/aco-blockF-vs-ABC-vs-postfix.csv](../tables/aco-blockF-v
 - Es trabajo "mecánico" (correctness verificable con assert vs full eval), bajo riesgo de regresión.
 
 Objetivo: bajar gap a +35 % o menos.
+
+### 19.9 Intento de Fase E (delta-eval) — abandonado
+
+Tras el éxito de Fase F, se intentó implementar Fase E del Plan II para acelerar las evaluaciones del Evaluator. **Resultado: abandonado por complejidad superior a lo previsto.**
+
+#### Profiling de partida
+
+Microbenchmark del Evaluator sobre instancias representativas:
+- i08 (174 pacientes, 14 habs): **2.3 ms/Evaluate**
+- i22 (409 pacientes, 20 habs): **3.7 ms/Evaluate**
+- i27 (493 pacientes, 26 habs): **5.4 ms/Evaluate**
+
+En 600 s a 3.7 ms/eval ≈ 162 k evaluaciones totales (i22). Margen de mejora real pero acotado.
+
+#### Diseño intentado
+
+`Evaluator::EvaluateSubset(sol, PatientChange)`: recompute solo los componentes y celdas afectadas por un movimiento de paciente. Llamado antes y después del move, la diferencia da el delta.
+
+#### Por qué se abandonó
+
+Test de correctness sobre i08 con 50 movimientos aleatorios reveló **40/50 mismatches** entre `delta_full = Evaluate(after) − Evaluate(before)` y `delta_subset = EvaluateSubset(after) − EvaluateSubset(before)`. Las causas:
+
+1. **`nurse_excessive_workload`** se calcula por `(nurse, day, shift)` globalmente, no por celda. Un PatientMove afecta el workload de las nurses asignadas a `(old_room, ...)` y `(new_room, ...)`, pero el coste de cada nurse depende del workload total acumulado, no de celdas aisladas. Restringirlo a un subset cuenta mal.
+
+2. **`continuity_of_care`** es por-paciente y mira las nurses asignadas a su (room, día_de_estancia). Un PatientMove cambia las nurses que ese paciente "ve" (porque cambia de habitación), pero el componente no se descompone trivialmente por celdas.
+
+Para implementarlos correctamente haría falta:
+- Mantener cache adicional `nurse_workload_excess[n][d][s]` (uno por celda nurse-día-turno).
+- Recomputar continuity solo para el pid movido (recorrer su nuevo stay).
+- Lidiar correctamente con las celdas "huérfanas" cuando un paciente sale de un room-day donde había nurse.
+
+Estimación realista: **2-3 días más de trabajo + verificación rigurosa**. Riesgo alto de bugs sutiles que dañen la calidad de soluciones sin que los tests lo detecten.
+
+#### Decisión
+
+Abandonar Fase E. Razones:
+1. Fase F ya entregó **−4.2 pp de gap** con un esfuerzo de 1 día.
+2. El gap restante (+40.67 %) no se cierra solo acelerando: la causa raíz son operadores macro que ya implementamos.
+3. ROI dudoso: incluso con delta-eval funcionando bien, el speedup ×5-×10 daría más iteraciones de la VNS, pero el cuello de botella ya no es la velocidad sino la diversidad de operadores. Un cuarto compound o un parámetro mejor calibrado puede dar más que delta-eval.
+4. Riesgo: bugs en delta-eval pueden producir soluciones aparentemente buenas pero con coste oficial peor → detectable solo con full validation.
+
+#### Lo que queda como aprendizaje
+
+- El Evaluator NO es trivialmente factorizable por celda (workload y continuity son agregados).
+- Las cachés de Solution actuales son **suficientes para el caso de uso real** (los compound moves no son tan caros como temía el plan original).
+- Una versión correcta de delta-eval necesita rediseñar `nurse_excessive_workload` con caché por (n, d, s) y `continuity_of_care` por pid.
+
+Líneas futuras (no acometidas): si se retoma, empezar por refactor de `Solution` añadiendo `nurse_workload_excess_per_cell` y `patient_nurses_seen[pid]`, después implementar EvaluateSubset con esas estructuras.
