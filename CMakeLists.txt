@@ -77,6 +77,7 @@ set(SOLVER_SOURCES
     src/solver/RandomGenerator.cpp
     src/solver/ACOSolver.cpp
     src/solver/ALNSPerturbation.cpp
+    src/solver/CompoundMoves.cpp
 )
 
 # =============================================================================

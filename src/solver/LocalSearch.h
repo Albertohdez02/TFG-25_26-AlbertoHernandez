@@ -27,10 +27,13 @@
 #include "../evaluator/Evaluator.h"
 #include "../solution/Solution.h"
 
-// Nombres de los 8 vecindarios (mismo orden que el vector interno de Run)
-static constexpr std::array<const char*, 8> kOperatorNames = {
-    "ChangeRoom", "ChangeDay",  "ChangeOT",   "Relocate",
-    "SwapRooms",  "SwapDays",   "ToggleOpt",  "ChangeNurse"};
+// Nombres de los vecindarios (8 atomicos + 3 compuestos = 11 total)
+// Indices 0..7 corresponden al bitmask de 8 bits usado historicamente.
+// Indices 8..10 son los compound moves anadidos en Plan II/Fase F.
+static constexpr std::array<const char*, 11> kOperatorNames = {
+    "ChangeRoom",   "ChangeDay",     "ChangeOT",         "Relocate",
+    "SwapRooms",    "SwapDays",      "ToggleOpt",        "ChangeNurse",
+    "KickPatient",  "ReorganizeDay", "SwapNurseBlock"};
 
 // Estadisticas de la busqueda local
 struct LocalSearchStats {
@@ -39,8 +42,9 @@ struct LocalSearchStats {
   int initial_cost = 0;
   int final_cost = 0;
   double elapsed_seconds = 0.0;
-  // Mejoras producidas por cada operador (mismo orden que kOperatorNames)
-  std::array<int, 8> op_improvements = {};
+  // Mejoras producidas por cada operador (mismo orden que kOperatorNames).
+  // Solo se usan las primeras 11; el resto es padding por si se anaden.
+  std::array<int, 16> op_improvements = {};
 
   [[nodiscard]] std::string ToString() const;
 };
@@ -77,6 +81,11 @@ struct VNSConfig {
   int    nurse_refresh_every          = 50;
   double nurse_refresh_tolerance_pct  = 2.0;
   bool   refresh_nurses               = true;
+
+  // Fase F (compound moves): activar/desactivar los 3 operadores compuestos
+  // (KickPatient, ReorganizeDay, SwapNurseBlock) introducidos en Plan II.
+  // Si false, el bucle LS se comporta exactamente como antes (8 atomicos).
+  bool   enable_compound = true;
 };
 
 class LocalSearch {

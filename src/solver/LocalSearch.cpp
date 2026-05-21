@@ -20,6 +20,7 @@
 
 #include "../evaluator/FeasibilityChecker.h"
 #include "ALNSPerturbation.h"
+#include "CompoundMoves.h"
 #include "RandomGenerator.h"
 
 // ============================================================================
@@ -91,11 +92,16 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
   Solution best_solution = solution;
   int best_cost = current_cost;
 
-  // 8 vecindarios en orden fijo; se filtran por enabled_mask
+  // 8 atomicos + 3 compuestos = 11 operadores. La mascara enabled_mask
+  // sigue siendo uint8_t para los 8 atomicos (compatibilidad CLI); los 3
+  // compuestos se activan via config.enable_compound.
   using MoveFunc = std::function<bool(Solution&, int&, std::mt19937&)>;
-  const std::array<MoveFunc, 8> all_ops = {
+  const std::array<MoveFunc, 11> all_ops = {
       TryChangeRoom,  TryChangeDay,      TryChangeOT,      TryRelocate,
-      TrySwapRooms,   TrySwapDays,       TryToggleOptional, TryChangeNurse};
+      TrySwapRooms,   TrySwapDays,       TryToggleOptional, TryChangeNurse,
+      CompoundMoves::TryKickPatient,
+      CompoundMoves::TryReorganizeDay,
+      CompoundMoves::TrySwapNurseBlock};
 
   // active[k] = {indice_global, funcion} para los operadores activos
   std::vector<std::pair<int, MoveFunc>> active;
@@ -103,6 +109,12 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
     if (enabled_mask & static_cast<uint8_t>(1 << i)) {
       active.push_back({i, all_ops[i]});
     }
+  }
+  // Compound moves activos si la config lo permite (Fase F / Plan II)
+  if (g_vns_config.enable_compound) {
+    active.push_back({8,  all_ops[8]});
+    active.push_back({9,  all_ops[9]});
+    active.push_back({10, all_ops[10]});
   }
 
   std::vector<int> order(active.size());

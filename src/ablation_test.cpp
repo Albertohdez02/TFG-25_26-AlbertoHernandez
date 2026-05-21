@@ -65,7 +65,7 @@ struct RunResult {
   int init_cost;
   int final_cost;
   double time_s;
-  std::array<int, 8> op_improvements = {};
+  std::array<int, 16> op_improvements = {};
   CostBreakdown breakdown;
 };
 
