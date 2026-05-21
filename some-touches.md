@@ -111,11 +111,115 @@ El presupuesto `polish_budget` viene del tiempo total: por defecto **10 % del ti
 
 ### 1.5 Implementación
 
-(Pendiente: completar tras escribir el código.)
+Ficheros añadidos:
+- [`src/solver/NursePolisher.h`](src/solver/NursePolisher.h) — interfaz pública.
+- [`src/solver/NursePolisher.cpp`](src/solver/NursePolisher.cpp) — implementación con 3 operadores hill-climbing.
+
+Ficheros modificados:
+- [`CMakeLists.txt`](CMakeLists.txt) — añadido `NursePolisher.cpp` a `SOLVER_SOURCES`.
+- [`src/solver/ACOSolver.h`](src/solver/ACOSolver.h) — nuevo campo `nurse_polish_budget_s` en `ACOParams` (default 60.0, clamp 30s..30 % de `time_limit_s`).
+- [`src/solver/ACOSolver.cpp`](src/solver/ACOSolver.cpp) — reserva `polish_budget` desde el tiempo total; tras el bucle ACO, llama a `NursePolisher::Polish(best_solution, polish_budget, rng)`. Logs: `Nurse polish: <before> -> <after> (<improvements> mejoras)`.
+
+Detalles de los operadores:
+
+**`ChangeOneNursePass`** (best-improvement por celda)
+- Recorre todas las celdas `(r, d, s)` con `room_occupancy(r, d) > 0`.
+- Para cada celda: iterar todas las `num_nurses` y elegir la que más reduce `Evaluator::Evaluate`.
+- Coste por celda: `O(N × Evaluate)` ≈ `N × 4 ms` en i22 = ~130 ms × ~600 celdas ≈ 78 s. Suficiente para una pasada en el budget de 60 s solo si el polish encuentra pocas alternativas factibles (esperado por HC10 de disponibilidad).
+
+**`SwapTwoNursesPass`** (intercambio entre celdas)
+- Recorre pares con mismo shift. Cap exterior = 200 celdas para evitar `O(n²)` explosivo.
+- First-improvement por celda externa: tan pronto un swap baja el coste, pasa a la siguiente celda externa.
+
+**`PromoteContinuityPass`** (extender continuidad)
+- Para cada `(room, shift)`:
+  1. Recoger días activos y contar frecuencia de cada nurse.
+  2. Nurse más frecuente = candidata.
+  3. Intentar propagarla a todos los días activos donde no esté, aceptando solo si baja el coste.
+- Ataca `continuity_of_care` directamente (≥ 13k puntos en i22).
+
+Bucle principal:
+```
+while (improved && time_remaining > 0.1):
+  improved |= ChangeOneNursePass()
+  improved |= SwapTwoNursesPass()
+  improved |= PromoteContinuityPass()
+  pass++; if pass >= 20: break
+```
 
 ### 1.6 Resultados
 
-(Pendiente.)
+#### 1.6.1 Spot-check i22 (600 s, 60 s polish reservados)
+
+| | 600 s ACO+ILS+F | 1800 s ACO+ILS+F | **600 s + Polish** |
+|---|---|---|---|
+| Coste oficial | 87,047 | 84,325 | **80,659** |
+| Gap vs best (47,861) | +81.9 % | +76.2 % | **+68.6 %** |
+
+**Mejora del Polish vs ABCF 600 s: −6,388 puntos (−7.3 %)** y con menos tiempo total que ABCF 1800 s.
+
+Cambios internos durante el polish (mejor solución): coste 83,745 → 76,223 (5 mejoras grandes en 60 s).
+
+Componentes oficiales clave tras polish:
+
+| Componente | Sin polish | **Con polish** | Δ |
+|---|---|---|---|
+| **ExcessiveNurseWorkload** | 23,140 | **16,720** | **−6,420** |
+| ContinuityOfCare | 13,265 | 12,690 | −575 |
+| RoomSkillLevel | 201 | 631 | +430 |
+| SurgeonTransfer | 99 | 64 | −35 |
+| RoomAgeMix | 192 | 159 | −33 |
+| ElectiveUnscheduled | 44,100 | 40,950 | −3,150 |
+
+El polisher hizo un trade-off racional: **aumentó RoomSkillLevel (+430)** para bajar drásticamente **ExcessiveNurseWorkload (−6,420)**. Saldo neto muy favorable (los pesos hacen que un déficit de skill cueste menos que el exceso de carga acumulada).
+
+#### 1.6.2 Benchmark agregado 30 instancias 600 s
+
+| Régimen | Total | Gap medio | Wins vs postfix |
+|---|---|---|---|
+| postfix (base) | 1,038,478 | +44.93 % | — |
+| A+B+C | 1,037,932 | +44.85 % | 23/30 |
+| A+B+C+F | 1,007,950 | +40.67 % | 26/30 |
+| **A+B+C+F + Polish** | **971,988** | **+35.65 %** | **28/30** |
+
+**Mejora Polish vs ABCF: −3.57 % (−35,962 puntos).**
+**Gap medio acumulado proyecto: +44.93 % → +35.65 % (−9.28 pp).**
+
+#### 1.6.3 Mejoras destacadas vs ABCF
+
+Mejoras grandes (las 10 mejores absolutas):
+
+| Inst | ABCF | Polish | Δ | Δ % |
+|---|---|---|---|---|
+| i22 | 87,047 | 81,750 | **−5,297** | −6.1 % |
+| i26 | 102,711 | 97,904 | **−4,807** | −4.7 % |
+| i27 | 92,973 | 89,455 | **−3,518** | −3.8 % |
+| i17 | 62,860 | 59,705 | **−3,155** | −5.0 % |
+| i20 | 38,951 | 35,891 | **−3,060** | −7.8 % |
+| i10 | 25,740 | 23,690 | **−2,050** | −8.0 % |
+| i21 | 36,208 | 34,249 | −1,959 | −5.4 % |
+| i15 | 19,007 | 17,251 | **−1,756** | −9.2 % |
+| i18 | 45,022 | 43,536 | −1,486 | −3.3 % |
+| i19 | 66,477 | 65,116 | **−1,361** | −2.0 % |
+
+**Nota i19**: primera vez en todo el proyecto que mejora respecto a una versión anterior. Sigue siendo regresión vs postfix (+5,819) pero ya se mueve a la baja.
+
+**Regresiones pequeñas**: i24 +19 (negligible), i29 +692.
+
+**Win rate: 28/30 vs postfix Y vs ABCF**. Validación clara.
+
+#### 1.6.4 Conclusión Fase 1
+
+El `NursePolisher` ataca exactamente el cuello de botella identificado en el análisis: los componentes nurse dominantes (workload + continuity + skill) suelen quedar subóptimos tras la búsqueda principal por dos razones:
+
+1. La VNS distribuye el tiempo entre 8+3 operadores, dando atención fragmentaria a `TryChangeNurse` y `TrySwapNurseBlock`.
+2. Estos operadores trabajan con first-improvement y caps moderados.
+
+Una fase **dedicada** de 60 s con best-improvement y sin caps (`ChangeOneNursePass`) más operadores específicos (`PromoteContinuityPass` ataca continuity, `SwapTwoNursesPass` reordena celdas) extrae el residual que la VNS deja.
+
+Tabla: [`tables/aco-polish-vs-ABCF-vs-postfix.csv`](tables/aco-polish-vs-ABCF-vs-postfix.csv).
+
+**Decisión**: mantener Polish como **default activo** (`nurse_polish_budget_s = 60.0`). Pasar a Fase 2.
 
 ---
 
