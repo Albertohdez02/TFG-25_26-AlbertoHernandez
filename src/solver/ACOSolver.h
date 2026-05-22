@@ -104,6 +104,15 @@ struct ACOParams {
   bool   seed_dampen = false;
   double seed_dampen_factor = 3.0;  // 3 * tau_min
 
+  // Some-touches Fase 3: modo hibrido ACO-rapido + ALNS+SA dedicado.
+  // El bucle ACO se reduce a aco_quick_budget_s (3-5 hormigas para una
+  // buena solucion inicial). El tiempo restante (excepto polish) se
+  // dedica a un bucle ALNS+SA puro sobre best_solution, con VNS corta
+  // de refinamiento entre Apply()s.
+  bool   hybrid_mode = false;
+  double aco_quick_budget_s = 90.0;  // tiempo para bucle ACO inicial
+  double alns_vns_time_s = 3.0;       // VNS entre Apply()s en el ALNS loop
+
   // Configuracion de la VNS (caps, exhaustive, refresh nurses, etc.).
   // Default = agresivo (Bloque A activo). Para legacy, pasar el resultado
   // de MakeLegacyVNSConfig() en main.cpp.

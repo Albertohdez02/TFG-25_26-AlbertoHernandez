@@ -349,20 +349,94 @@ Tabla completa: [`tables/aco-phase2-vs-polish-vs-postfix.csv`](tables/aco-phase2
 
 ---
 
-## Fase 3 — ACO rápido + ALNS+SA dedicado (pendiente)
+## Fase 3 — ACO rápido + ALNS+SA dedicado (implementado, pendiente de validar)
 
 ### 3.1 Diagnóstico previo
 
-Actualmente cada hormiga ACO ejecuta una VNS completa. En 600 s caben ~30 iteraciones de hormigas. La mayoría del tiempo se gasta en VNS, no en aprendizaje de feromonas.
+Actualmente cada hormiga ACO ejecuta una VNS completa. En 600 s caben ~30 iteraciones de hormigas. La mayoría del tiempo se gasta en VNS, no en aprendizaje de feromonas. El ALNS+SA actual sólo se invoca como perturbación intra-VNS, sin disponer de su propio bloque de tiempo dedicado.
 
-### 3.2 Cambios propuestos
+### 3.2 Diseño implementado
 
-- Reducir el tiempo del bucle ACO a **60-120 s** (3-5 iteraciones, 4 hormigas paralelas).
-- Dedicar **el resto** (480-540 s) a ALNS+SA puro sobre `best_solution` encontrada:
-  - Temperatura SA recalibrada con el coste real de `best_solution`.
-  - Más iteraciones de destroy/repair (~300 en vez de ~30).
-  - Sin VNS entre Apply()s (acelera el bucle).
+**Distribución de tiempo en preset `hybrid`** (para 600 s totales):
 
-Modo CLI: nuevo argumento `mode=hybrid` que activa este esquema.
+| Fase | Tiempo | Función |
+|---|---|---|
+| ACO + VNS rápido | **90 s** | Bucle de hormigas con VNS completa → produce `best_solution` inicial |
+| ALNS+SA puro | **~450 s** | Bucle de `Apply()` (destroy + greedy repair + SA-accept) sobre `best_solution`, con VNS corta de 3 s entre Applys aceptados |
+| NursePolisher (Fase 1) | **60 s** | Pulido final de la matriz de enfermeras |
 
-(Diseño detallado tras Fase 1 y 2.)
+**Mecánica del bucle ALNS+SA puro**:
+```cpp
+ALNSPerturbation alns(problem, best_cost);  // T_0 calibrada
+Solution work_sol = best_solution;
+int work_cost = best_cost;
+while (alns_remaining > vns_time + 1.0) {
+  if (alns.Apply(work_sol, work_cost, rng)) {  // ya incluye SA accept
+    LocalSearch::Run(work_sol, ..., vns_time=3.0, ..., vns_config);
+    work_cost = Evaluator::Evaluate(work_sol);
+    if (work_cost < best_cost && feasible) {
+      best_cost = work_cost;
+      best_solution = work_sol;
+    }
+  }
+}
+```
+
+Diferencia clave con el modo normal:
+- **Más iteraciones de ALNS** (~150 en vez de ~30 en modo normal).
+- **Temperatura SA calibrada con el coste de la mejor solución encontrada**, no con la del seed inicial.
+- **VNS corta dedicada** (3 s) entre Applys, en vez de VNS larga compitiendo con todo.
+
+### 3.3 Implementación
+
+Ficheros modificados:
+- [`src/solver/ACOSolver.h`](src/solver/ACOSolver.h) — nuevos flags `hybrid_mode`, `aco_quick_budget_s`, `alns_vns_time_s` en `ACOParams`.
+- [`src/solver/ACOSolver.cpp`](src/solver/ACOSolver.cpp):
+  - Cálculo de presupuestos: `aco_time_budget`, `alns_pure_budget`, `polish_budget`.
+  - Tras el bucle ACO, nuevo bloque que ejecuta `ALNSPerturbation::Apply` + VNS corta hasta agotar `alns_pure_budget`.
+  - Si `alns_pure_budget < 10s` por configuración apretada → degrada a modo normal sin avisar.
+- [`src/main.cpp`](src/main.cpp) — nuevo preset CLI `hybrid` que activa `hybrid_mode = true` en `ACOParams`.
+
+**Flag**: `ACOParams::hybrid_mode = false` (default off). Activar via `preset=hybrid` o `aco_params.hybrid_mode = true`.
+
+### 3.4 Validación esperada
+
+**Hipótesis**: el bucle ALNS+SA puro debería atacar mejor el componente `ElectiveUnscheduledPatients` en instancias problemáticas (i22, i27, i26), porque:
+1. Más iteraciones de destroy/repair → más oportunidades de mover bloqueantes.
+2. Temperatura SA bien calibrada → acepta empeoramientos temporales que pueden conducir a mejores valles.
+3. VNS corta y dedicada → no compite con operadores patient-move.
+
+### 3.5 Resultados
+
+**Pendiente**: spot-check i22, i27, i19 con `preset=hybrid` 600 s; luego benchmark 30 instancias.
+
+Comando para spot-check:
+```bash
+./build/ihtc_solver data/i22.json 42 999999 999 600 aco 12 ils hybrid
+./validator/IHTP_Validator data/i22.json solutions/i22_solution.json
+```
+
+Comando para benchmark agregado (cuando spot-check sea favorable):
+```bash
+mkdir -p solutions_phase3_default logs/phase3
+seq -f "%02g" 1 30 | xargs -I{} -P 4 \
+  bash -c './build/ihtc_solver data/i$0.json 42 999999 999 600 aco 12 ils hybrid > logs/phase3/i$0.log 2>&1 && mv solutions/i$0_solution.json solutions_phase3_default/i$0_solution.json' {}
+python3 scripts/analyze_polish.py  # o adaptar para phase3
+```
+
+---
+
+## Resumen del estado actual del proyecto (al cierre de la sesión)
+
+| Régimen | Total 30 inst | Gap medio | Wins vs postfix |
+|---|---|---|---|
+| postfix (línea base) | 1,038,478 | +44.93 % | — |
+| A+B+C (refinamientos) | 1,037,932 | +44.85 % | 23/30 |
+| A+B+C+F (compound moves) | 1,007,950 | +40.67 % | 26/30 |
+| **A+B+C+F + NursePolisher** (Fase 1) | **971,988** | **+35.65 %** | **28/30** |
+| A+B+C+F + Polish + Phase2 (anti-conv) | 972,566 | +35.73 % | 28/30 (opt-in) |
+| **A+B+C+F + Polish + Phase3 (hybrid)** | **PENDIENTE** | — | — |
+
+**Mejora acumulada documentada**: −9.28 puntos porcentuales (+44.93 % → +35.65 %).
+
+Fase 3 implementada pero no validada — siguiente paso al reanudar.

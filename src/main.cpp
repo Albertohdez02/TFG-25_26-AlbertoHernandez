@@ -119,8 +119,9 @@ int main(int argc, char* argv[]) {
 
   // Construir configs segun preset
   VNSConfig vns_cfg;  // default agresivo (Bloque A)
-  bool legacy   = (preset == "legacy");
-  bool preset_ab = (preset == "ab");  // A+B sin C (use_tau_nurse=false)
+  bool legacy    = (preset == "legacy");
+  bool preset_ab = (preset == "ab");      // A+B sin C
+  bool preset_hybrid = (preset == "hybrid"); // ACO rapido + ALNS+SA dedicado
   if (legacy) {
     vns_cfg = MakeLegacyVNSConfig();
   }
@@ -156,9 +157,10 @@ int main(int argc, char* argv[]) {
   }
   std::cout << "  Tiempo global maximo: " << global_time_s << " s\n";
   std::cout << "  Preset: " << preset;
-  if (legacy)         std::cout << " (caps duros, heuristicas pobres)";
-  else if (preset_ab) std::cout << " (Bloque A+B activos, C off)";
-  else                std::cout << " (Bloque A+B+C activos)";
+  if (legacy)              std::cout << " (caps duros, heuristicas pobres)";
+  else if (preset_ab)      std::cout << " (Bloque A+B activos, C off)";
+  else if (preset_hybrid)  std::cout << " (modo hibrido ACO-rapido + ALNS+SA dedicado)";
+  else                     std::cout << " (Bloque A+B+C activos)";
   std::cout << "\n";
 
 
@@ -189,6 +191,12 @@ int main(int argc, char* argv[]) {
     } else if (preset_ab) {
       // A+B activos (defaults) pero C off
       aco_params.use_tau_nurse = false;
+    } else if (preset_hybrid) {
+      // Fase 3: modo hibrido. ACO+VNS corta para construir + ALNS+SA dedicado
+      aco_params.hybrid_mode = true;
+      // n_ants se mantiene (la limitacion es el tiempo, no el numero)
+      // perturb_kind="ils" en el bucle ACO inicial; el ALNS+SA post-ACO
+      // se ejecuta siempre puro
     }
     aco_params.vns_config = vns_cfg;
     std::cout << "  Hormigas por iteracion: " << aco_params.n_ants << "\n";

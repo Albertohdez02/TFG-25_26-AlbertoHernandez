@@ -21,6 +21,7 @@
 
 #include "../evaluator/Evaluator.h"
 #include "../evaluator/FeasibilityChecker.h"
+#include "ALNSPerturbation.h"
 #include "LocalSearch.h"
 #include "NursePolisher.h"
 #include "RandomGenerator.h"
@@ -53,7 +54,27 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
   if (polish_budget > 0.0) {
     polish_budget = std::clamp(polish_budget, 30.0, time_limit_s * 0.30);
   }
-  double aco_time_budget = time_limit_s - polish_budget;
+
+  // Some-touches Fase 3: modo hibrido. Reserva un budget grande para el
+  // bucle ALNS+SA puro tras la fase ACO inicial.
+  double alns_pure_budget = 0.0;
+  double aco_time_budget;
+  if (params.hybrid_mode) {
+    // aco_quick_budget controla la duracion del bucle ACO (encontrar
+    // una buena solucion inicial); el resto del tiempo (excepto polish)
+    // va al bucle ALNS+SA puro.
+    double aco_quick = std::clamp(params.aco_quick_budget_s,
+                                    30.0, time_limit_s * 0.30);
+    aco_time_budget = aco_quick;
+    alns_pure_budget = time_limit_s - aco_quick - polish_budget;
+    if (alns_pure_budget < 10.0) {
+      // Tiempo total insuficiente para hybrid; degradar a modo normal
+      aco_time_budget = time_limit_s - polish_budget;
+      alns_pure_budget = 0.0;
+    }
+  } else {
+    aco_time_budget = time_limit_s - polish_budget;
+  }
   auto remaining_s = [&]() { return aco_time_budget - elapsed_s(); };
 
   int num_patients = problem.GetNumPatients();
@@ -251,16 +272,54 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
     }
   }
 
+  // Some-touches Fase 3: bucle ALNS+SA puro tras el bucle ACO. Solo en
+  // modo hibrido. Repetir destroy/repair + VNS corta hasta agotar el
+  // alns_pure_budget. Recalibra T_0 con el coste real de best_solution.
+  if (params.hybrid_mode && alns_pure_budget > 1.0 &&
+      best_cost < std::numeric_limits<int>::max()) {
+    int before_alns = best_cost;
+    int alns_applies = 0;
+    int alns_accepts = 0;
+
+    ALNSPerturbation alns(problem, best_cost);
+    auto alns_t0 = std::chrono::steady_clock::now();
+    auto alns_remaining = [&]() {
+      double elapsed = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - alns_t0).count();
+      return alns_pure_budget - elapsed;
+    };
+
+    // Estado de trabajo: arrancamos desde best_solution
+    Solution work_sol = best_solution;
+    int work_cost = best_cost;
+
+    double vns_time = std::max(0.5, params.alns_vns_time_s);
+
+    while (alns_remaining() > vns_time + 1.0) {
+      ++alns_applies;
+      if (alns.Apply(work_sol, work_cost, rng)) {
+        ++alns_accepts;
+        // VNS corta tras un Apply aceptado para refinar
+        LocalSearch::Run(work_sol, max_ls_iter, rng, vns_time,
+                          /*enabled_mask=*/0xFF, params.use_alns,
+                          params.vns_config);
+        // tras VNS la solucion puede haber cambiado; re-evaluar
+        work_cost = Evaluator::Evaluate(work_sol);
+        if (work_cost < best_cost &&
+            FeasibilityChecker::Check(work_sol).feasible) {
+          best_cost = work_cost;
+          best_solution = work_sol;
+        }
+      }
+    }
+    std::cout << "  ALNS puro: " << before_alns << " -> " << best_cost
+              << " (" << alns_applies << " applies, "
+              << alns_accepts << " accepts)\n";
+  }
+
   // Some-touches Fase 1 - Pulido final dedicado a enfermeras.
   // Se ejecuta sobre la mejor solucion factible encontrada, dentro de un
-  // presupuesto separado (params.nurse_polish_budget_s). El presupuesto
-  // sale del tiempo "guardado" para esta fase (el bucle ACO usa
-  // time_limit_s - polish_budget; la convencion es que el caller le pase
-  // un time_limit_s descontando el polish_budget, o internamente
-  // recortamos el bucle ACO. Aqui se asume que el time_limit_s original
-  // YA incluye el polish_budget, por lo que el bucle puede haber
-  // sobrepasado su parte; usamos cualquier remaining_s positivo o el
-  // budget configurado).
+  // presupuesto separado (params.nurse_polish_budget_s).
   if (params.nurse_polish_budget_s > 0.0 &&
       best_cost < std::numeric_limits<int>::max()) {
     double polish_budget = params.nurse_polish_budget_s;
