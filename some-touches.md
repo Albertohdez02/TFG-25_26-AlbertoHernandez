@@ -292,13 +292,60 @@ Ficheros modificados:
 
 ### 2.4 Resultados
 
-#### 2.4.1 Spot-check i19, i22, i27 600 s
+#### 2.4.1 Spot-check secuencial i19, i22, i27 (600 s, 1 solver a la vez)
 
-(Pendiente — corriendo en background, ~30 min.)
+| Instancia | Polish | **Phase 2** | Δ |
+|---|---|---|---|
+| i19 (atractor) | 65,116 | **62,990** | −2,126 (−3.3 %) |
+| i22 | 81,750 | **78,389** | −3,361 (−4.1 %) |
+| i27 | 89,455 | 89,094 | −361 (−0.4 %) |
 
-#### 2.4.2 Benchmark agregado 30 instancias
+Resultado positivo: mejoran las 3 instancias problemáticas. **i19 baja del atractor por primera vez en todo el proyecto.**
 
-(Pendiente.)
+#### 2.4.2 Benchmark agregado 30 instancias (4 paralelo, condiciones de competencia)
+
+| Régimen | Total | Gap | Wins vs postfix |
+|---|---|---|---|
+| postfix | 1,038,478 | +44.93 % | — |
+| Polish (Fase 1) | 971,988 | **+35.65 %** | 28/30 |
+| **Phase 2** | **972,566** | **+35.73 %** | 28/30 |
+
+**Phase 2 vs Polish: +578 (+0.06 %), wins 17/30.**
+
+#### 2.4.3 Por qué la divergencia spot vs benchmark
+
+El spot-check usó **ejecución secuencial** (1 solver con sus 4 hormigas internas = 4 threads), mientras que el benchmark usa **4 solvers paralelos** (4 × 4 hormigas = 16 threads sobre ~4 cores reales). En condición de sobre-suscripción los tiempos efectivos de cada hormiga se reducen significativamente, lo que castiga más a Phase 2 que a Polish porque Phase 2 *necesita más iteraciones* para que su mayor exploración produzca mejoras (reset suave acumula efecto a largo plazo, q0 decreciente espera a las últimas iteraciones para explotar).
+
+#### 2.4.4 Por instancia
+
+**Mejoras Phase 2 vs Polish** (12 instancias, suma ≈ −4,500):
+- i26: −1,255 (−1.3 %)
+- i16: −599
+- i11: −480
+- i12: −415
+- i15: −354
+- **i19: −262** ← rompe parcialmente el atractor histórico
+- i23: −269
+- i05, i06, i28, i29, i01: pequeñas mejoras
+
+**Regresiones Phase 2 vs Polish** (12 instancias, suma ≈ +5,500):
+- **i20: +1,242**, **i27: +1,097**, **i22: +577**, **i21: +425**, **i14: +390**, **i08: +393**, **i10: +360**, otros < +200
+
+**Interpretación**: los cambios anti-convergencia ayudan en instancias donde el solver estaba en atractor local malo (i19/i23/i26) y dañan donde el solver ya estaba en un óptimo local bueno y necesitaba *exploitation* para refinarlo (i20/i27/i22).
+
+### 2.5 Decisión
+
+**Phase 2 queda como opt-in (no default).** Defaults revertidos:
+- `q0_dynamic = false`
+- `tau_min_factor = 2` (comportamiento legacy)
+- `soft_reset = false`
+- `seed_dampen = false`
+
+Activar manualmente cuando se identifique una instancia con convergencia prematura clara.
+
+**Líneas futuras**: una versión adaptativa de Phase 2 que active los flags solo cuando detecte estancamiento real (e.g., contador stagnation > umbral) podría capturar las ganancias sin pagar las pérdidas. No implementado en esta iteración.
+
+Tabla completa: [`tables/aco-phase2-vs-polish-vs-postfix.csv`](tables/aco-phase2-vs-polish-vs-postfix.csv).
 
 ---
 
