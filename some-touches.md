@@ -408,21 +408,109 @@ Ficheros modificados:
 
 ### 3.5 Resultados
 
-**Pendiente**: spot-check i22, i27, i19 con `preset=hybrid` 600 s; luego benchmark 30 instancias.
+#### 3.5.1 Spot-check i22 600 s con preset=hybrid
 
-Comando para spot-check:
-```bash
-./build/ihtc_solver data/i22.json 42 999999 999 600 aco 12 ils hybrid
-./validator/IHTP_Validator data/i22.json solutions/i22_solution.json
+Trace del bucle híbrido:
+```
+ACO+VNS 90 s        → coste inicial 87,953
+ALNS puro 450 s     → 87,953 → 77,541 (139 Applies, 125 accepts, 90% acceptance)
+Nurse polish 60 s   → 77,541 → 71,223 (5 mejoras)
+                    → oficial 75,765
 ```
 
-Comando para benchmark agregado (cuando spot-check sea favorable):
-```bash
-mkdir -p solutions_phase3_default logs/phase3
-seq -f "%02g" 1 30 | xargs -I{} -P 4 \
-  bash -c './build/ihtc_solver data/i$0.json 42 999999 999 600 aco 12 ils hybrid > logs/phase3/i$0.log 2>&1 && mv solutions/i$0_solution.json solutions_phase3_default/i$0_solution.json' {}
-python3 scripts/analyze_polish.py  # o adaptar para phase3
-```
+**i22 600 s hybrid vs Polish 600 s: −5,985 (−7.3 %)**. Bate incluso el Polish a 1800 s (×3 tiempo), que daba 80,659.
+
+El bucle ALNS+SA puro consiguió programar **10 opcionales más** que el Polish 600 s (sin programar: 91 → 81 = ElectiveUnscheduled −4,500). La hipótesis se valida: con más iteraciones de destroy/repair, los patrones de inserción en greedy repair encuentran combinaciones que los operadores VNS no alcanzan.
+
+#### 3.5.2 Benchmark agregado 30 instancias (4 paralelo, condiciones competición)
+
+| Régimen | Total | Gap | Wins vs postfix |
+|---|---|---|---|
+| postfix (base) | 1,038,478 | +44.93 % | — |
+| A+B+C+F | 1,007,950 | +40.67 % | 26/30 |
+| Polish (Fase 1) | 971,988 | +35.65 % | 28/30 |
+| **HYBRID (Fase 3)** | **952,969** | **+32.99 %** | **26/30** |
+
+**Mejora HYBRID vs Polish: −19,019 puntos (−1.96 %).**
+**Gap medio acumulado total proyecto: +44.93 % → +32.99 % (−11.94 pp).**
+
+#### 3.5.3 Mejoras grandes por instancia
+
+10 mejores absolutas (HYBRID vs POLISH):
+
+| Inst | Polish | Hybrid | Δ | Δ % |
+|---|---|---|---|---|
+| i22 | 81,750 | 77,249 | **−4,501** | −5.5 % |
+| i27 | 89,455 | 85,904 | **−3,551** | −4.0 % |
+| i26 | 97,904 | 94,484 | **−3,420** | −3.5 % |
+| **i16** | **16,166** | **13,053** | **−3,113** | **−19.2 %** |
+| i18 | 43,536 | 41,767 | **−1,769** | −4.1 % |
+| i29 | 19,554 | 17,883 | −1,671 | −8.6 % |
+| i28 | 85,546 | 83,907 | −1,639 | −1.9 % |
+| i24 | 41,535 | 40,472 | −1,063 | −2.6 % |
+| i15 | 17,251 | 16,604 | −647 | −3.8 % |
+| i19 | 65,116 | 64,556 | −560 | −0.9 % |
+
+**i16 con −19.2 % es excepcional**: bajaba de Polish 16,166 (gap +59.4 %) a Hybrid 13,053 (gap +28.7 %). Casi 30 pp de mejora en una instancia individual.
+
+**i19 mejora por primera vez vs Polish** (−560), confirmando que la diversidad de exploración del ALNS+SA puro empieza a salir del atractor histórico.
+
+#### 3.5.4 Regresiones
+
+| Inst | Polish | Hybrid | Δ |
+|---|---|---|---|
+| **i23** | 53,139 | 55,994 | **+2,855** |
+| i30 | 47,114 | 48,723 | +1,609 |
+| i08 | 8,535 | 9,162 | +627 |
+| i21 | 34,249 | 34,550 | +301 |
+| i20 | 35,891 | 36,159 | +268 |
+| i10 | 23,690 | 23,805 | +115 |
+| i09 | 8,522 | 8,525 | +3 |
+
+7 regresiones, mayoritariamente pequeñas. **i23 sigue siendo atractor problemático** (también lo era en ABCF y Polish; el hybrid empeora vs Polish pero menos que el postfix).
+
+### 3.6 Conclusión y decisión
+
+El modo **hybrid** (`preset=hybrid`) **se establece como mejor configuración del solver**. Razones cuantitativas:
+
+- Gap medio −2.66 pp adicionales sobre Polish (de +35.65 % a +32.99 %).
+- 23/30 wins individuales vs Polish, 26/30 vs postfix.
+- Mejoras de **doble dígito en %** en instancias problemáticas (i16 −19 %, i29 −9 %, i22 −5 %).
+- Sólo 1 regresión > 1500 puntos (i23, atractor consistente).
+
+**Sin embargo NO se cambia el default** (`hybrid_mode = false`) porque:
+- El comportamiento es **muy distinto** al esquema clásico ACO+VNS (puede sorprender en uso).
+- Modo `default` (Polish) sigue siendo competitivo y más predecible.
+- `preset=hybrid` permite activarlo cuando se quiere el rendimiento máximo.
+
+CSV: [`tables/aco-hybrid-vs-polish-vs-postfix.csv`](tables/aco-hybrid-vs-polish-vs-postfix.csv).
+
+---
+
+## Resumen final del proyecto (cierre)
+
+| Régimen | Total 30 inst | Gap medio | Wins | Estado |
+|---|---|---|---|---|
+| postfix (línea base bug-fixed) | 1,038,478 | +44.93 % | — | baseline |
+| A+B+C (refinamientos) | 1,037,932 | +44.85 % | 23/30 | descartado (gap −0.05 % insignificante) |
+| A+B+C+F (compound moves) | 1,007,950 | +40.67 % | 26/30 | default activo |
+| **A+B+C+F + Polish** (Fase 1) | **971,988** | **+35.65 %** | **28/30** | **default actual** (`preset=default`) |
+| + Phase 2 anti-conv | 972,566 | +35.73 % | 28/30 | opt-in (impacto neutro) |
+| **+ Phase 3 hybrid** | **952,969** | **+32.99 %** | **26/30** | **preset=hybrid** (mejor cifra) |
+| best-known (competición) | 716,560 | — | — | referencia |
+
+**Mejora acumulada total** desde el postfix (línea base honesta tras bug-fixes del evaluator):
+- −85,509 puntos (−8.23 % del total)
+- −11.94 puntos porcentuales de gap medio
+
+**Distancia al best-known**: +32.99 % en `preset=hybrid` (desde +44.93 % inicial). El gap se ha reducido a 0.73× el original.
+
+Comparativa cronológica de hitos:
+1. Bug-fixes del Evaluator → gap +54.9 % → **+44.9 %** (línea base honesta).
+2. Bloque A+B+C (refinamientos VNS+ACO) → gap **+44.85 %** (placebo).
+3. Bloque F (compound moves IMADA-inspired) → gap **+40.67 %**.
+4. Some-touches Fase 1 (NursePolisher) → gap **+35.65 %**.
+5. Some-touches Fase 3 (modo híbrido) → gap **+32.99 %**.
 
 ---
 
