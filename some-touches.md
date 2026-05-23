@@ -510,7 +510,63 @@ Comparativa cronológica de hitos:
 2. Bloque A+B+C (refinamientos VNS+ACO) → gap **+44.85 %** (placebo).
 3. Bloque F (compound moves IMADA-inspired) → gap **+40.67 %**.
 4. Some-touches Fase 1 (NursePolisher) → gap **+35.65 %**.
-5. Some-touches Fase 3 (modo híbrido) → gap **+32.99 %**.
+5. Some-touches Fase 3 (modo híbrido) → gap **+32.99 %** (seed=42).
+6. **Multi-seed (5 seeds) confirmación robusta → gap medio +32.67 % (Wilcoxon p < 10⁻⁴)**.
+
+---
+
+## Anexo: Validación estadística multi-seed
+
+Para reforzar la robustez de los resultados (todo el desarrollo se hizo con `seed=42` único), se ejecutó un benchmark de **5 seeds × 30 instancias = 150 ejecuciones** con `preset=hybrid` 600 s. Seeds: 42, 137, 991, 5043, 7919.
+
+### Resultados agregados
+
+| Métrica | Valor |
+|---|---|
+| Gap medio (media por instancia) | **+32.67 %** |
+| Gap medio (mejor caso por instancia) | +30.72 % |
+| Gap medio (peor caso por instancia) | +34.91 % |
+| Gap postfix (línea base) | +44.93 % |
+| **Reducción robusta vs postfix** | **−12.26 pp** (mean), −14.21 pp (min) |
+
+### Test de significancia
+
+**Wilcoxon pareado postfix vs hybrid_mean** (30 pares):
+- W-statistic = 413.00
+- **p-value = 3.53 × 10⁻⁵**
+- Hipótesis nula (postfix == hybrid_mean) rechazada con p < 0.001.
+- **Conclusión estadística**: hybrid es significativamente mejor que postfix.
+
+### Análisis de variabilidad por instancia
+
+**Instancias muy estables** (std < 100):
+- i02 (std=20), i05 (37), i03 (68), i06 (57), i01 (48), i07 (81).
+- Casi independientes del seed → el algoritmo encuentra siempre el mismo óptimo local.
+
+**Instancias inestables** (std > 800):
+- **i16: std=1272** (min=13,053 / max=16,127, rango 23 % del mejor).
+- i20: std=1270, i26: std=1232, i19: std=1012, i27: std=976, i22: std=793.
+
+Estas son justamente las "problemáticas" que tienen alta varianza → el solver es **sensible a la suerte de la búsqueda** en ellas. En i16, el mejor seed logró +28.7 % de gap (cerca de romper la barrera del 30 %); el peor seed se quedó en +59.1 %.
+
+### Instancia i23 — atractor estructural genuino
+
+A diferencia de las anteriores, **i23 tiene baja varianza** (std=443) pero **siempre** cae cerca de +45 % de gap. No es mala suerte de búsqueda — es **atractor local consistente**. Sería la candidata clara para una investigación futura focalizada (CP/MIP sub-problema, multi-colony, o reformulación del modelo).
+
+### Coincidencia con seed único
+
+El gap del seed único utilizado en el desarrollo (seed=42, hybrid → +32.99 %) **coincide** con la media multi-seed (+32.67 %). Esto valida que **seed=42 no fue lotería**, sino representativo del comportamiento esperado.
+
+### Ficheros generados
+
+- [`tables/aco-multiseed-stats.csv`](tables/aco-multiseed-stats.csv) — 30 filas con n, min, max, mean, std, gap_*_pct y los 5 valores por seed.
+- [`graficas/multiseed_boxplot_hybrid.png`](graficas/multiseed_boxplot_hybrid.png) — boxplot por instancia, ✕=postfix, ★=best-known.
+- [`solutions_multiseed/seed_{42,137,991,5043,7919}/`](solutions_multiseed/) — 150 soluciones individuales.
+- [`logs/multiseed/`](logs/multiseed/) — 150 logs de ejecución.
+
+### Tiempo de cómputo
+
+5 h 36 min reales (20:37 → 02:13) con 4 procesos paralelos. Total CPU: ~22 h.
 
 ---
 
