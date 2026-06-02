@@ -12,7 +12,7 @@
 // MVP (esta version): un destroy (RandomRemoval) y un repair
 // (TryAssignPatientFeasibly + ForceAssignMandatory). Adaptive weights y
 // operadores cluster (Surgeon/Day/Room/WorstRemoval) se añaden tras
-// validar el MVP empiricamente. Esa decision viene del hallazgo §16:
+// validar el MVP empiricamente. Esa decision viene del hallazgo de que
 // los operadores cluster fallan bajo first-improvement pero deben
 // funcionar bajo SA-acceptance. Probamos primero el SA solo (MVP) y si
 // aporta, añadimos los operadores cluster.
