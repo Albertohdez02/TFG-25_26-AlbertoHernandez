@@ -1,0 +1,186 @@
+% Diagrama del flujo de decision secuencial de una hormiga en ConstructSolution.
+% Ilustra: (i) que cada decision usa una matriz de feromona MARGINAL e
+% independiente, y (ii) que el acoplamiento dia-sala-OT-enfermera se recupera
+% en el chequeo de factibilidad sobre los caches delta de la Solucion.
+%
+% Requiere en el preambulo:
+%   \usepackage{tikz}
+%   \usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds, calc}
+%   \usepackage{amsmath}
+%   \usepackage{xcolor}
+
+% -----------------------------------------------------------------------------
+% Paleta de colores semantica
+% -----------------------------------------------------------------------------
+\definecolor{colTau}{RGB}{217,119,6}     % feromona marginal (naranja)
+\definecolor{colEta}{RGB}{37,99,235}     % heuristica estatica (azul)
+\definecolor{colDyn}{RGB}{22,163,74}     % heuristica dinamica / estado (verde)
+\definecolor{colFeas}{RGB}{220,38,38}    % chequeo de factibilidad (rojo)
+\definecolor{colGreedy}{RGB}{107,114,128}% decision greedy sin feromona (gris)
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance = 13mm and 16mm,
+  font = \small,
+  % --- estilos de nodo ---
+  decision/.style = {rectangle, rounded corners, draw=black, very thick,
+                     fill=black!3, minimum width=46mm, minimum height=9mm,
+                     align=center},
+  feas/.style     = {diamond, aspect=2.2, draw=colFeas, very thick,
+                     fill=colFeas!8, align=center, inner sep=1pt,
+                     minimum width=44mm},
+  io/.style       = {trapezium, trapezium left angle=70,
+                     trapezium right angle=110, draw=black, thick,
+                     fill=black!5, align=center, minimum width=40mm},
+  ann/.style      = {rectangle, rounded corners, draw, thick, align=left,
+                     font=\scriptsize, inner sep=3pt, text width=43mm},
+  annTau/.style   = {ann, draw=colTau, fill=colTau!7},
+  annEta/.style   = {ann, draw=colEta, fill=colEta!7},
+  annDyn/.style   = {ann, draw=colDyn, fill=colDyn!7},
+  annGreedy/.style= {ann, draw=colGreedy, fill=colGreedy!7},
+  flow/.style     = {-{Stealth[length=2.5mm]}, very thick},
+  feed/.style     = {-{Stealth[length=2mm]}, thick, dashed},
+  lbl/.style      = {font=\scriptsize\itshape, fill=white, inner sep=1pt}
+]
+
+% =========================== COLUMNA CENTRAL (flujo) =========================
+\node[io] (start) {Paciente $p$\\\scriptsize(obligatorios por \textit{slack}; opcionales al azar)};
+
+\node[decision, below=of start] (day)
+  {\textbf{1. Elegir día} $d^{\ast}$\\[1pt]
+   $\mathrm{score}_d=\tau_{\text{day}}[p,d]^{\alpha}\!\cdot\eta_{\text{day}}[p,d]^{\beta}$\\[1pt]
+   \scriptsize\textsc{SelectByScore}$(\cdot,q_0)$};
+
+\node[decision, below=of day] (room)
+  {\textbf{2. Elegir habitación} $r^{\ast}$\\[1pt]
+   $\mathrm{score}_r=\tau_{\text{room}}[p,r]^{\alpha}\!\cdot\eta_{\text{room}}[p,r]^{\beta}$\\[1pt]
+   \scriptsize\textsc{SelectByScore}$(\cdot,q_0)$};
+
+\node[decision, below=of room] (ot)
+  {\textbf{3. Elegir quirófano} (OT)\\[1pt]
+   \scriptsize\textbf{greedy} por menor carga\\
+   \scriptsize\textcolor{colGreedy}{sin feromona}};
+
+\node[feas, below=9mm of ot] (feas)
+  {\textbf{¿Factible?}\\[1pt]
+   \scriptsize\textsc{IsFeasiblePatient-}\\[-1pt]
+   \scriptsize\textsc{Assignment}$(p,r^{\ast}\!,d^{\ast}\!,\text{ot})$};
+
+\node[decision, below=10mm of feas] (assign)
+  {\textbf{Asignar} $p\!\to\!(r^{\ast},d^{\ast},\text{ot})$\\[1pt]
+   \scriptsize actualizar cachés delta};
+
+% --- cascada de reparacion (lateral, a la derecha del rombo) ---
+\node[decision, right=22mm of feas, fill=colFeas!5, draw=colFeas]
+  (repair)
+  {\textbf{Cascada de reparación}\\[1pt]
+   \scriptsize otras salas (mismo $d^{\ast}$)\\
+   \scriptsize $\rightarrow$ otros días\\
+   \scriptsize $\rightarrow$ \textsc{ForceAssignMandatory}};
+
+% =========================== FLECHAS DE FLUJO ===============================
+\draw[flow] (start) -- (day);
+\draw[flow] (day)   -- (room);
+\draw[flow] (room)  -- (ot);
+\draw[flow] (ot)    -- (feas);
+\draw[flow] (feas)  -- node[lbl, right] {sí} (assign);
+\draw[flow] (feas)  -- node[lbl, above] {no} (repair);
+% la reparacion reintenta el chequeo de factibilidad
+\draw[feed, colFeas] (repair.north) to[out=90,in=0] (feas.east);
+
+% bucle: siguiente paciente
+\draw[flow] (assign.west) -- ++(-34mm,0) |- node[lbl, near start] {siguiente $p$} (start.west);
+
+% =========================== ANOTACIONES IZQUIERDA ==========================
+% (que matriz alimenta cada decision)
+\node[annTau, left=of day] (a-tauday)
+  {\textcolor{colTau}{$\boldsymbol{\tau}_{\text{day}}[P\times D]$} — \textbf{marginal}\\
+   \textcolor{colEta}{$\boldsymbol{\eta}_{\text{day}}$} estática (OT abierto,\\ disp.\ cirujano)};
+
+\node[annTau, left=of room] (a-tauroom)
+  {\textcolor{colTau}{$\boldsymbol{\tau}_{\text{room}}[P\times R]$} — \textbf{marginal}\\
+   \textcolor{colEta}{$\boldsymbol{\eta}_{\text{room}}$} estática (HC7,\\ ocupantes, capacidad)};
+
+\node[annGreedy, left=of ot] (a-greedy)
+  {Sin matriz de feromona:\\
+   típicamente 2--5 OT/día\\ $\Rightarrow$ decisión casi determinista};
+
+\draw[feed, colTau] (a-tauday)  -- (day);
+\draw[feed, colTau] (a-tauroom) -- (room);
+\draw[feed, colGreedy] (a-greedy) -- (ot);
+
+% =========================== ANOTACION CLAVE (factibilidad) =================
+\node[ann, draw=colFeas, fill=colFeas!7, left=of feas, text width=40mm]
+  (a-feas)
+  {\textbf{\textcolor{colFeas}{Punto de acoplamiento}}\\
+   Las matrices son independientes, pero aquí se valida la \textbf{terna conjunta}
+   $(d^{\ast},r^{\ast},\text{ot})$ contra los cachés (ocupación, carga de OT y
+   cirujano). El día \emph{condiciona} qué salas/OT son válidos.};
+\draw[feed, colFeas] (a-feas) -- (feas);
+
+\end{tikzpicture}
+
+\caption{Flujo de decisión de una hormiga por paciente en \textsc{ConstructSolution}.
+Cada elección (día, habitación) se guía por una matriz de feromona
+\textcolor{colTau}{\textbf{marginal e independiente}}; el quirófano se elige
+\textcolor{colGreedy}{greedy sin feromona}. El \textbf{acoplamiento}
+día--sala--OT \emph{no} vive en la feromona, sino en el
+\textcolor{colFeas}{\textbf{chequeo de factibilidad}} sobre los cachés delta de
+la solución, que rechaza ternas inválidas y dispara la cascada de reparación.}
+\label{fig:decision-flow}
+\end{figure}
+
+
+% =============================================================================
+% Segundo diagrama (mas compacto): fase de enfermeras tras los pacientes.
+% Resalta que aqui SI hay heuristica dinamica (estado-consciente).
+% =============================================================================
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance = 6mm and 12mm,
+  font = \small,
+  step/.style = {rectangle, rounded corners, draw=black, very thick,
+                 fill=black!3, minimum width=52mm, minimum height=9mm,
+                 align=center},
+  dyn/.style  = {rectangle, rounded corners, draw=colDyn, very thick,
+                 fill=colDyn!8, minimum width=52mm, align=center},
+  fb/.style   = {rectangle, rounded corners, draw=colFeas, very thick,
+                 fill=colFeas!6, minimum width=52mm, align=center},
+  flow/.style = {-{Stealth[length=2.5mm]}, very thick},
+  note/.style = {font=\scriptsize, align=left, text width=46mm}
+]
+
+\node[step] (cells)
+  {\textbf{Para cada celda} $(r,d,s)$ con\\ $\text{occupancy}(r,d)>0$};
+
+\node[dyn, below=of cells] (score)
+  {$\mathrm{score}_n=\textcolor{colTau}{\tau_{\text{nurse}}[s,n]}^{\alpha}\!\cdot
+    \textcolor{colDyn}{\eta_{\text{nurse}}(n,r,d,s)}^{\beta}$\\[2pt]
+   \scriptsize\textcolor{colDyn}{$\eta$ \textbf{dinámica}: skill, carga acumulada,
+   continuidad con $d\!-\!1$}};
+
+\node[step, below=of score] (sel)
+  {\textsc{SelectByScore}$(\mathrm{score}_n, q_0)\to n^{\ast}$};
+
+\node[fb, below=of sel] (cover)
+  {\textbf{\textsc{EnsureFullNurseCoverage}}\\
+   \scriptsize red de seguridad: rellena celdas sin\\ enfermera (garantiza HC13/HC14)};
+
+\draw[flow] (cells) -- (score);
+\draw[flow] (score) -- (sel);
+\draw[flow] (sel)   -- node[note, right=1mm] {tras todas las celdas} (cover);
+
+\node[note, right=of score, text width=40mm]
+  {\textbf{Contraste con día/sala:} aquí la heurística \textcolor{colDyn}{\textbf{sí
+   lee el estado}} de la solución (bloque C1), por lo que el acoplamiento es más
+   rico que en la asignación de pacientes.};
+
+\end{tikzpicture}
+\caption{Asignación de enfermeras tras colocar a los pacientes. A diferencia de
+las decisiones día/sala —de heurística estática—, $\eta_{\text{nurse}}$ es
+\textcolor{colDyn}{\textbf{dinámica}} y depende del estado parcial de la solución.
+\textsc{EnsureFullNurseCoverage} actúa como red de seguridad de factibilidad.}
+\label{fig:nurse-flow}
+\end{figure}

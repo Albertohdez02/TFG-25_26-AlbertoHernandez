@@ -570,17 +570,95 @@ El gap del seed único utilizado en el desarrollo (seed=42, hybrid → +32.99 %)
 
 ---
 
-## Resumen del estado actual del proyecto (al cierre de la sesión)
+## Anexo B — Evaluación en el conjunto `m01–m30`
 
-| Régimen | Total 30 inst | Gap medio | Wins vs postfix |
+Tras cerrar el desarrollo, se aplicó el modo `hybrid` al **segundo conjunto** del concurso IHTC 2024 (`m01–m30`), de mayor tamaño en promedio que `i01–i30`:
+
+| Conjunto | P máx | R máx | N máx | Tamaño relativo |
+|---|---|---|---|---|
+| `i01–i30` | 409 (i22) | 20 | 44 | base |
+| `m01–m30` | **489 (m30)** | **48** | **90** | mayor |
+
+### B.1 Benchmark single-seed (`preset=hybrid` 600 s, seed=42)
+
+| Métrica | Valor |
+|---|---|
+| **Feasibles** | **30 / 30** ✓ |
+| Total best (oficial) | 694,953 |
+| Total hybrid | 937,988 |
+| **Gap (sobre totales)** | **+34.97 %** |
+| Gap medio (mean por inst) | +29.93 % |
+| Gap mediana | +27.03 % |
+| Gap mín (m02) | +4.82 % |
+| Gap máx (m29) | +83.05 % |
+| Std | 17.18 % |
+
+Las `m*` son **~2 pp peores** que las `i*` (+34.97 % vs +32.99 %), coherente con su mayor tamaño (mismas 600 s, pero menos iteraciones LS cabrían). Tabla: [`tables/aco-m-hybrid-vs-best.csv`](tables/aco-m-hybrid-vs-best.csv).
+
+### B.2 Caso focal: m29 a 1 hora
+
+m29 fue la peor instancia del conjunto m a 600 s (+83.05 %). Se relanzó con `hybrid` durante 3,600 s para medir el techo real:
+
+| | m29 600 s | **m29 1 h** | Δ |
 |---|---|---|---|
-| postfix (línea base) | 1,038,478 | +44.93 % | — |
-| A+B+C (refinamientos) | 1,037,932 | +44.85 % | 23/30 |
-| A+B+C+F (compound moves) | 1,007,950 | +40.67 % | 26/30 |
-| **A+B+C+F + NursePolisher** (Fase 1) | **971,988** | **+35.65 %** | **28/30** |
-| A+B+C+F + Polish + Phase2 (anti-conv) | 972,566 | +35.73 % | 28/30 (opt-in) |
-| **A+B+C+F + Polish + Phase3 (hybrid)** | **PENDIENTE** | — | — |
+| Coste oficial | 88,014 | **68,322** | **−19,692** |
+| Gap vs best (48,082) | +83.05 % | **+42.10 %** | **−40.95 pp** |
 
-**Mejora acumulada documentada**: −9.28 puntos porcentuales (+44.93 % → +35.65 %).
+**Trace del bucle 1 h:**
+- ACO+VNS 90 s → coste inicial 90,991
+- ALNS+SA puro 3,450 s → **28,939 Applies, 822 aceptados (2.8 %)** → 70,690
+- NursePolisher 60 s → 66,826 interno (3 mejoras)
+- Oficial final: **68,322**
 
-Fase 3 implementada pero no validada — siguiente paso al reanudar.
+### B.3 Observación: decay del Simulated Annealing en horizontes largos
+
+El **acceptance rate** del ALNS+SA muestra una caída drástica conforme aumenta el número de Applies:
+
+| Caso | Applies | Accepts | Rate |
+|---|---|---|---|
+| i22 600 s | 139 | 125 | **90 %** |
+| i22 2,400 s | 780 | 641 | **82 %** |
+| **m29 1 h** | **28,939** | **822** | **2.8 %** |
+
+El cooling rate actual (`cooling_rate = 0.998` por defecto en `ALNSParams`) baja la temperatura a un factor de $0.998^N$ tras $N$ Applies. Para $N = 28{,}939$ → factor $0.998^{28939} \approx 6 \times 10^{-26}$, prácticamente cero. **El SA degenera en hill-climbing puro** durante toda la fase final.
+
+**Implicación**: el `cooling_rate = 0.998` está calibrado para horizontes de ~100–500 Applies. En horizontes de 28k+ Applies (m29 1 h) se queda corto. Hay dos vías:
+
+1. **Cooling adaptativo**: calcular `cooling_rate` en función del número esperado de Applies y del ratio $T_0 / T_{\min}$ deseado al final. Por ejemplo, para que tras $N$ Applies la temperatura baje a un 1 % de $T_0$:
+   $$\text{cooling\_rate} = (T_{\min}/T_0)^{1/N} = 0.01^{1/28939} \approx 0.99984$$
+   En lugar del 0.998 actual.
+
+2. **Reheating periódico**: cuando el acceptance rate cae por debajo de un umbral (e.g., 5 %), elevar la temperatura a un fracción de $T_0$ (estrategia "memetic" o "restart-SA").
+
+Ambas son cambios pequeños (~30 líneas de código), **opt-in** mediante flag, sin riesgo de romper el modo `hybrid` actual.
+
+### B.4 Componentes oficiales residuales (m29 1 h)
+
+| Componente | Coste | % del total |
+|---|---|---|
+| **ElectiveUnscheduledPatients** | **36,300** (242 sin programar) | **53 %** |
+| PatientDelay | 16,470 | 24 % |
+| RoomSkillLevel | 4,080 | 6 % |
+| OpenOperatingTheater | 3,900 | 5.7 % |
+| ContinuityOfCare | 3,817 | 5.6 % |
+| ExcessiveNurseWorkload | 2,140 | 3.1 % |
+| RoomAgeMix | 875 | 1.3 % |
+| SurgeonTransfer | 740 | 1.1 % |
+| **Total** | **68,322** | |
+
+m29 es un caso extremo de **densidad de demanda**: 242 pacientes opcionales no programados representan el 53 % del coste residual. Eso sugiere que el horizonte de planificación está **estructuralmente saturado**, y meter más opcionales requeriría desalojos en cadena más largos de los que el actual `TryKickPatient` (cadena de 1 desalojo) consigue. Una versión con **cadenas de ejection-chain de profundidad k > 1** sería una línea futura concreta para m29 y similares.
+
+### B.5 Notas finales sobre paralelización en modo `hybrid`
+
+Durante m29 a 1 h se confirmó la utilización de CPU:
+
+| Fase | Tiempo | Hilos | % del wall-time |
+|---|---|---|---|
+| Warm-start seed | ~180 s | 1 | 5 % |
+| Bucle ACO (hormigas) | 90 s | **4** | 2 % |
+| ALNS+SA puro | 3,450 s | 1 | 95 % |
+| NursePolisher | 60 s | 1 | 2 % |
+
+Solo **el 2 % del tiempo** se ejecuta con los 4 cores en paralelo (la fase ACO). El **95 %** del tiempo (ALNS+SA puro) usa un solo core. Utilización efectiva: ~27 %.
+
+En contraste, `preset=default` (Polish sin hybrid) usa los 4 cores en el ~92 % del tiempo (la VNS de cada hormiga ACO ocupa la mayoría del wall-time). **Paralelizar el ALNS+SA puro** (multi-island ALNS) es la mejora de paralelización con mayor recorrido pendiente, estimada en 2-3 días de implementación con ~1.5-3 pp de mejora esperada en gap medio.

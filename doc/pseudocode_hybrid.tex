@@ -1,0 +1,215 @@
+% Pseudocodigo del algoritmo hibrido (preset=hybrid) del proyecto IHTC 2024.
+% Requiere: \usepackage{algorithm}, \usepackage{algpseudocode}, \usepackage{amsmath}.
+%
+% Sugerencias de paquetes complementarios:
+%   \usepackage{algorithm}
+%   \usepackage{algpseudocode}
+%   \usepackage{amsmath, amssymb}
+%   \algrenewcommand\algorithmicrequire{\textbf{Entrada:}}
+%   \algrenewcommand\algorithmicensure{\textbf{Salida:}}
+
+% =============================================================================
+% Algoritmo 1 — Solver hibrido principal
+% =============================================================================
+\begin{algorithm}[H]
+\caption{\textsc{HybridSolver} — Algoritmo final del proyecto (\texttt{preset=hybrid}).}
+\label{alg:hybrid-solver}
+\begin{algorithmic}[1]
+\Require Instancia $\mathcal{I}$, semilla aleatoria $\sigma$, tiempo total $T$, parámetros ACO $\theta$.
+\Ensure Mejor solución factible encontrada $\mathbf{s}^{\star}$.
+
+\State $T_{\text{ACO}} \gets \min(\theta.\text{aco\_quick}, 0.30\,T)$
+       \Comment{$\approx 90$ s por defecto}
+\State $T_{\text{polish}} \gets \mathrm{clamp}(\theta.\text{polish}, 30, 0.30\,T)$
+       \Comment{$\approx 60$ s por defecto}
+\State $T_{\text{ALNS}} \gets T - T_{\text{ACO}} - T_{\text{polish}}$
+       \Comment{$\approx 450$ s en $T=600$ s}
+
+\State Inicializar $\boldsymbol{\tau}_{\text{day}}, \boldsymbol{\tau}_{\text{room}}, \boldsymbol{\tau}_{\text{nurse}} \gets \tau_0$ en posiciones factibles
+\State Precomputar heurísticas $\boldsymbol{\eta}_{\text{day}}, \boldsymbol{\eta}_{\text{room}}$ (estáticas)
+
+\Statex \textbf{// Fase 1 — Warm-start informado}
+\State $T_{\text{seed}} \gets \mathrm{clamp}(0.08\,T,\ 30,\ 180)$
+\State $\mathbf{s}_{\text{seed}} \gets \Call{RandomGenerator.Generate}{\mathcal{I}, \sigma}$
+\State \Call{LocalSearch.Run}{$\mathbf{s}_{\text{seed}}, T_{\text{seed}}$}
+\If{$\mathbf{s}_{\text{seed}}$ es factible}
+   \State $\mathbf{s}^{\star} \gets \mathbf{s}_{\text{seed}};\ c^{\star} \gets \text{Evaluate}(\mathbf{s}_{\text{seed}})$
+   \State \Call{SeedPheromones}{$\boldsymbol{\tau}, \mathbf{s}_{\text{seed}}, c^{\star}$}
+\EndIf
+
+\Statex \textbf{// Fase 2 — Bucle ACO+VNS rapido}
+\State $t_0 \gets \text{now}();\ \text{stagn} \gets 0$
+\While{$\text{now}() - t_0 < T_{\text{ACO}}$}
+   \State \textbf{// Construir } $n_{\text{ants}}$ \textbf{soluciones en paralelo}
+   \For{$k = 1$ \textbf{to} $n_{\text{ants}}$ \textbf{ en paralelo (pool de 4 hilos)}}
+      \State $\mathbf{s}_k \gets \Call{ConstructSolution}{\boldsymbol{\tau}, \boldsymbol{\eta}, \theta}$
+            \Comment{Algoritmo \ref{alg:construct}}
+      \State \Call{LocalSearch.Run}{$\mathbf{s}_k, T_{\text{batch}}$}
+            \Comment{11 vecindarios: 8 atómicos + 3 compuestos}
+      \State $c_k \gets \text{Evaluate}(\mathbf{s}_k)$
+   \EndFor
+   \State Sea $\mathbf{s}_{\text{best-iter}}$ la mejor del lote
+   \If{$c_{\text{best-iter}} < c^{\star}$ \textbf{y} $\mathbf{s}_{\text{best-iter}}$ factible}
+      \State $\mathbf{s}^{\star} \gets \mathbf{s}_{\text{best-iter}};\ c^{\star} \gets c_{\text{best-iter}}$
+      \State $\text{stagn} \gets 0$
+   \Else
+      \State $\text{stagn} \gets \text{stagn} + 1$
+   \EndIf
+   \State \Call{UpdatePheromones}{$\boldsymbol{\tau}, \mathbf{s}^{\star}, c^{\star}$}
+        \Comment{MMAS con cotas $[\tau_{\min}, \tau_{\max}]$}
+   \If{$\text{stagn} \ge \theta.\text{stagnation\_k}$}
+      \State \Call{ResetPheromones}{$\boldsymbol{\tau}$};\ $\text{stagn} \gets 0$
+   \EndIf
+\EndWhile
+
+\Statex \textbf{// Fase 3 — ALNS+SA puro sobre la mejor solucion}
+\State $\mathbf{s} \gets \mathbf{s}^{\star};\ c \gets c^{\star}$
+\State $\mathcal{A} \gets \Call{ALNSPerturbation.Init}{\mathcal{I}, c^{\star}}$
+       \Comment{calibra $T_0$ con coste real}
+\State $t_1 \gets \text{now}()$
+\While{$\text{now}() - t_1 < T_{\text{ALNS}} - T_{\text{vns}} - 1$}
+   \If{$\Call{ALNS.Apply}{\mathcal{A}, \mathbf{s}, c}$}
+      \Comment{Algoritmo \ref{alg:alns-apply}}
+      \State \Call{LocalSearch.Run}{$\mathbf{s}, T_{\text{vns}}=3\text{ s}$}
+      \State $c \gets \text{Evaluate}(\mathbf{s})$
+      \If{$c < c^{\star}$ \textbf{y} $\mathbf{s}$ factible}
+         \State $\mathbf{s}^{\star} \gets \mathbf{s};\ c^{\star} \gets c$
+      \EndIf
+   \EndIf
+\EndWhile
+
+\Statex \textbf{// Fase 4 — NursePolisher (pulido final dedicado)}
+\If{$T_{\text{polish}} > 0$ \textbf{y} $c^{\star} < \infty$}
+   \State \Call{NursePolisher.Polish}{$\mathbf{s}^{\star}, T_{\text{polish}}$}
+        \Comment{Algoritmo \ref{alg:nurse-polisher}}
+   \State $c^{\star} \gets \text{Evaluate}(\mathbf{s}^{\star})$
+\EndIf
+
+\State \Return $\mathbf{s}^{\star}$
+\end{algorithmic}
+\end{algorithm}
+
+
+% =============================================================================
+% Algoritmo 2 — Construccion guiada por feromonas (cada hormiga)
+% =============================================================================
+\begin{algorithm}[H]
+\caption{\textsc{ConstructSolution} — Construcción guiada por $\boldsymbol{\tau}$ y $\boldsymbol{\eta}$ (regla ACS).}
+\label{alg:construct}
+\begin{algorithmic}[1]
+\Require Matrices $\boldsymbol{\tau}_{\text{day}}, \boldsymbol{\tau}_{\text{room}}, \boldsymbol{\tau}_{\text{nurse}}$, $\boldsymbol{\eta}_{\text{day}}, \boldsymbol{\eta}_{\text{room}}$, parámetros $\theta = (\alpha, \beta, q_0)$.
+\Ensure Solución completa $\mathbf{s}$.
+
+\State $\mathbf{s} \gets$ solución vacía
+\State $\mathcal{M} \gets$ obligatorios ordenados por \textit{slack} $= \text{due} - \text{release}$ ascendente
+\State $\mathcal{O} \gets$ opcionales, orden aleatorio
+
+\ForAll{$p \in \mathcal{M} \cup \mathcal{O}$}
+   \State \textbf{// Candidatos día}
+   \State $\mathcal{D}_p \gets \{ d : \tau_{\text{day}}[p,d] > 0 \wedge \eta_{\text{day}}[p,d] > 0 \wedge \exists \text{OT abierto en } d\}$
+   \State $\mathrm{score}_d \gets \tau_{\text{day}}[p,d]^{\alpha} \cdot \eta_{\text{day}}[p,d]^{\beta}\ \ \forall d \in \mathcal{D}_p$
+   \State $d^{\ast} \gets \Call{SelectByScore}{\mathrm{score}_d, q_0}$
+        \Comment{ACS: argmax con prob.\ $q_0$, ruleta con $1-q_0$}
+   \State \textbf{// Candidatos habitación}
+   \State $\mathcal{R}_p \gets \{ r : \tau_{\text{room}}[p,r] > 0 \wedge \eta_{\text{room}}[p,r] > 0\}$
+   \State $r^{\ast} \gets \Call{SelectByScore}{\tau_{\text{room}}[p,r]^{\alpha} \cdot \eta_{\text{room}}[p,r]^{\beta},\ q_0}$
+   \State Asignar $p \to (r^{\ast}, d^{\ast}, \text{OT con menor carga})$
+   \If{infactible}
+      \State Aplicar cascada de reparación (otras habitaciones, otros días, \texttt{ForceAssignMandatory})
+   \EndIf
+\EndFor
+
+\State \textbf{// Asignación de enfermeras (guiada por } $\boldsymbol{\tau}_{\text{nurse}}$\textbf{)}
+\ForAll{celda $(r, d, s)$ con $\text{occupancy}(r, d) > 0$}
+   \State $\mathcal{N}_{r,d,s} \gets \{n : \text{Feasible}(n, r, d, s)\}$
+   \State $\mathrm{score}_n \gets \tau_{\text{nurse}}[s, n]^{\alpha} \cdot \eta_{\text{nurse}}(n, r, d, s)^{\beta}$
+   \State Asignar $n^{\ast} \gets \Call{SelectByScore}{\mathrm{score}_n, q_0}$ a $(r, d, s)$
+\EndFor
+
+\State \Return $\mathbf{s}$
+\end{algorithmic}
+\end{algorithm}
+
+
+% =============================================================================
+% Algoritmo 3 — ALNS Apply (destroy + repair + Simulated Annealing accept)
+% =============================================================================
+\begin{algorithm}[H]
+\caption{\textsc{ALNS.Apply} — Iteración destroy + repair con aceptación SA.}
+\label{alg:alns-apply}
+\begin{algorithmic}[1]
+\Require Solución actual $\mathbf{s}$, coste $c$, temperatura $T$, parámetros $\theta_{\text{ALNS}}$.
+\Ensure $\mathbf{s}$ y $c$ posiblemente actualizados; \textbf{true} si aceptado.
+
+\State $\mathbf{s}_{\text{prev}} \gets \mathbf{s};\ c_{\text{prev}} \gets c$
+       \Comment{snapshot por si rechaza}
+\State $k \gets \mathrm{clamp}\!\bigl(\lfloor\sqrt{|\mathbf{s}|}\cdot 0.5\rfloor,\ 4,\ 30\bigr)$
+
+\State $\text{op} \gets$ \textsc{uniform}$\{$Random, Surgeon, Day$\}$
+       \Comment{destroy operator}
+\State $\mathcal{R} \gets \text{op}.\textsc{Remove}(\mathbf{s}, k)$
+       \Comment{retira $k$ pacientes}
+
+\State \Call{GreedyRepair}{$\mathbf{s}, \mathcal{R}$}
+       \Comment{re-insertar por slack asc; \texttt{ForceAssignMandatory} si falla}
+\State \Call{EnsureFullNurseCoverage}{$\mathbf{s}$}
+\State $c_{\text{new}} \gets \text{Evaluate}(\mathbf{s});\ \Delta \gets c_{\text{new}} - c_{\text{prev}}$
+
+\If{$\Delta \le 0$ \textbf{ or } $\mathrm{rand}(0,1) < \exp(-\Delta / T)$}
+   \State $c \gets c_{\text{new}}$
+   \State $T \gets \max(T_{\min},\ T \cdot \rho_{\text{cool}})$ \Comment{enfriamiento}
+   \State \Return \textbf{true}
+\Else
+   \State $\mathbf{s} \gets \mathbf{s}_{\text{prev}};\ c \gets c_{\text{prev}}$
+        \Comment{rollback}
+   \State \Return \textbf{false}
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+
+% =============================================================================
+% Algoritmo 4 — NursePolisher (pulido final dedicado de enfermeras)
+% =============================================================================
+\begin{algorithm}[H]
+\caption{\textsc{NursePolisher} — Pulido hill-climbing dedicado a la matriz de enfermeras.}
+\label{alg:nurse-polisher}
+\begin{algorithmic}[1]
+\Require Solución $\mathbf{s}$ factible, presupuesto $T_{\text{polish}}$.
+\Ensure $\mathbf{s}$ con matriz de enfermeras refinada.
+
+\State $\mathcal{C} \gets \{(r, d, s) : \text{occupancy}(r, d) > 0\}$
+       \Comment{celdas activas; no cambian durante el pulido}
+\State $\text{improved} \gets$ \textbf{true};\ $\text{pass} \gets 0$
+\While{$\text{improved}$ \textbf{y} $T_{\text{rem}} > 0.1$ \textbf{y} $\text{pass} < 20$}
+   \State $\text{improved} \gets$ \textbf{false};\ $\text{pass} \gets \text{pass} + 1$
+
+   \Statex \quad\textbf{// Operador 1: ChangeOneNurse — best-improvement por celda}
+   \ForAll{$(r, d, s) \in \mathcal{C}$}
+      \State Sea $n_{\text{cur}} \gets $ nurse actual; sea $n^{\ast} \gets n_{\text{cur}}$, $c^{\ast} \gets c$
+      \ForAll{$n$ factible en $(r,d,s)$ con $n \ne n_{\text{cur}}$}
+         \State Reemplazar temporalmente $n_{\text{cur}}$ por $n$; $c' \gets \text{Evaluate}(\mathbf{s})$
+         \If{$c' < c^{\ast}$} \State $c^{\ast} \gets c'$;\ $n^{\ast} \gets n$ \EndIf
+         \State Restaurar $n_{\text{cur}}$
+      \EndFor
+      \If{$n^{\ast} \ne n_{\text{cur}}$}
+         \State Aplicar $n^{\ast}$ definitivamente;\ $c \gets c^{\ast}$;\ $\text{improved} \gets$ \textbf{true}
+      \EndIf
+   \EndFor
+
+   \Statex \quad\textbf{// Operador 2: SwapTwoNurses — intercambio entre celdas (mismo shift)}
+   \ForAll{par $(c_1, c_2) \in \mathcal{C}\times\mathcal{C}$ con $\text{shift}(c_1)=\text{shift}(c_2)$ (cap 200)}
+      \State Intentar swap; aceptar si baja el coste (first-improvement)
+   \EndFor
+   \If{algún swap aceptado} \State $\text{improved} \gets$ \textbf{true} \EndIf
+
+   \Statex \quad\textbf{// Operador 3: PromoteContinuity — extender la nurse mas frecuente}
+   \ForAll{$(r, s)$}
+      \State Identificar $n_{\text{maj}}$ = nurse más frecuente en días activos de $(r,s)$
+      \State Para cada día activo, intentar propagar $n_{\text{maj}}$; aceptar si baja el coste
+   \EndFor
+   \If{alguna propagación aceptada} \State $\text{improved} \gets$ \textbf{true} \EndIf
+\EndWhile
+\State \Return $\mathbf{s}$
+\end{algorithmic}
+\end{algorithm}
