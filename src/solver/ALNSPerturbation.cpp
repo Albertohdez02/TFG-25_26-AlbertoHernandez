@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 
 #include "../evaluator/Evaluator.h"
@@ -15,6 +16,20 @@ ALNSPerturbation::ALNSPerturbation(const ProblemData& problem,
                                     int initial_cost,
                                     const ALNSParams& params)
     : problem_(problem), params_(params) {
+  // Hooks de tuning por entorno (no-op si la var no esta definida): permiten
+  // calibrar el ALNS+SA sin recompilar. Se aplican aqui para cubrir los dos
+  // sitios de instanciacion (VNS-ALNS e hybrid) con un solo cambio.
+  if (const char* v = std::getenv("IHTC_ALNS_COOLING"); v && v[0])
+    params_.cooling_rate = std::atof(v);
+  if (const char* v = std::getenv("IHTC_ALNS_TEMP_FACTOR"); v && v[0])
+    params_.initial_temp_factor = std::atof(v);
+  if (const char* v = std::getenv("IHTC_ALNS_DESTROY_FACTOR"); v && v[0])
+    params_.destroy_factor = std::atof(v);
+  if (const char* v = std::getenv("IHTC_ALNS_MIN_DESTROY"); v && v[0])
+    params_.min_destroy = std::atoi(v);
+  if (const char* v = std::getenv("IHTC_ALNS_MAX_DESTROY"); v && v[0])
+    params_.max_destroy = std::atoi(v);
+
   // T_0 proporcional al coste inicial. Para coste tipico ~5000-100000,
   // factor 0.05 => T_0 ~250-5000. Suficiente para aceptar deltas pequeños
   // con prob alta y deltas medianos con prob moderada al inicio.

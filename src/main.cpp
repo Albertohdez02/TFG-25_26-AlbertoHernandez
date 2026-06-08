@@ -52,6 +52,42 @@ static VNSConfig MakeLegacyVNSConfig() {
   return cfg;
 }
 
+// --- Hooks de tuning por variable de entorno -------------------------------
+// Permiten barrer parametros sin recompilar. Si la variable NO esta definida,
+// el valor por defecto del struct se conserva intacto => comportamiento
+// identico al baseline cuando no se exporta ninguna (fallback garantizado).
+static void EnvOverrideDouble(const char* name, double& target) {
+  const char* v = std::getenv(name);
+  if (v != nullptr && v[0] != '\0') target = std::atof(v);
+}
+static void EnvOverrideInt(const char* name, int& target) {
+  const char* v = std::getenv(name);
+  if (v != nullptr && v[0] != '\0') target = std::atoi(v);
+}
+static void EnvOverrideBool(const char* name, bool& target) {
+  const char* v = std::getenv(name);
+  if (v != nullptr && v[0] != '\0') target = (std::atoi(v) != 0);
+}
+
+// Aplica overrides de los parametros ACO sweepables desde el entorno.
+static void ApplyACOEnvOverrides(ACOParams& p) {
+  EnvOverrideInt("IHTC_N_ANTS", p.n_ants);
+  EnvOverrideDouble("IHTC_ALPHA", p.alpha);
+  EnvOverrideDouble("IHTC_BETA", p.beta);
+  EnvOverrideDouble("IHTC_RHO", p.rho);
+  EnvOverrideDouble("IHTC_Q0", p.q0);
+  EnvOverrideInt("IHTC_TAU_MIN_FACTOR", p.tau_min_factor);
+  EnvOverrideInt("IHTC_STAGNATION_K", p.stagnation_k);
+  EnvOverrideDouble("IHTC_POLISH_BUDGET", p.nurse_polish_budget_s);
+  // Fase 2 anti-convergencia (opt-in): permitir activarlas por entorno
+  EnvOverrideBool("IHTC_Q0_DYNAMIC", p.q0_dynamic);
+  EnvOverrideDouble("IHTC_Q0_INITIAL", p.q0_initial);
+  EnvOverrideDouble("IHTC_Q0_FINAL", p.q0_final);
+  EnvOverrideBool("IHTC_SOFT_RESET", p.soft_reset);
+  EnvOverrideBool("IHTC_SEED_DAMPEN", p.seed_dampen);
+  EnvOverrideDouble("IHTC_SEED_DAMPEN_FACTOR", p.seed_dampen_factor);
+}
+
 // Imprime una linea separadora
 void PrintSeparator(const std::string& title) {
   std::cout << "\n" << std::string(60, '=') << "\n";
@@ -199,7 +235,13 @@ int main(int argc, char* argv[]) {
       // se ejecuta siempre puro
     }
     aco_params.vns_config = vns_cfg;
+    // Overrides de tuning por entorno (no-op si no se exporta ninguna var).
+    ApplyACOEnvOverrides(aco_params);
     std::cout << "  Hormigas por iteracion: " << aco_params.n_ants << "\n";
+    std::cout << "  Params ACO: alpha=" << aco_params.alpha
+              << " beta=" << aco_params.beta << " rho=" << aco_params.rho
+              << " q0=" << aco_params.q0
+              << " tau_min_factor=" << aco_params.tau_min_factor << "\n";
     std::cout << "  Perturbacion: "
               << (aco_params.use_alns ? "ALNS+SA" : "ILS clasico") << "\n";
     best_solution = ACOSolver::Run(problem, rng, max_iterations,
