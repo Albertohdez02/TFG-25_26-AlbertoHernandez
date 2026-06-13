@@ -79,6 +79,8 @@ static void ApplyACOEnvOverrides(ACOParams& p) {
   EnvOverrideInt("IHTC_TAU_MIN_FACTOR", p.tau_min_factor);
   EnvOverrideInt("IHTC_STAGNATION_K", p.stagnation_k);
   EnvOverrideDouble("IHTC_POLISH_BUDGET", p.nurse_polish_budget_s);
+  EnvOverrideDouble("IHTC_ACO_QUICK", p.aco_quick_budget_s);  // split ACO/ALNS en hybrid
+  EnvOverrideDouble("IHTC_ALNS_VNS_TIME", p.alns_vns_time_s);
   // Fase 2 anti-convergencia (opt-in): permitir activarlas por entorno
   EnvOverrideBool("IHTC_Q0_DYNAMIC", p.q0_dynamic);
   EnvOverrideDouble("IHTC_Q0_INITIAL", p.q0_initial);
@@ -86,6 +88,23 @@ static void ApplyACOEnvOverrides(ACOParams& p) {
   EnvOverrideBool("IHTC_SOFT_RESET", p.soft_reset);
   EnvOverrideBool("IHTC_SEED_DAMPEN", p.seed_dampen);
   EnvOverrideDouble("IHTC_SEED_DAMPEN_FACTOR", p.seed_dampen_factor);
+}
+
+// Aplica overrides de los parametros VNS/ILS sweepables desde el entorno.
+static void ApplyVNSEnvOverrides(VNSConfig& c) {
+  EnvOverrideInt("IHTC_VNS_MAX_PATIENTS", c.max_patients_per_op);
+  EnvOverrideBool("IHTC_VNS_EXHAUSTIVE_OPT", c.exhaustive_optional);
+  EnvOverrideInt("IHTC_VNS_INSERTIONS", c.max_insertions_per_optional);
+  EnvOverrideInt("IHTC_VNS_PERTURB_BASE", c.perturb_strength_base);
+  EnvOverrideInt("IHTC_VNS_PERTURB_MAX", c.perturb_strength_max);
+  EnvOverrideDouble("IHTC_VNS_PERTURB_FACTOR", c.perturb_strength_factor);
+  EnvOverrideInt("IHTC_VNS_SWAP_PAIRS", c.max_pairs_swap);
+  EnvOverrideInt("IHTC_VNS_RELOCATE", c.max_combos_relocate);
+  EnvOverrideInt("IHTC_VNS_NURSE_POS", c.max_positions_nurse);
+  EnvOverrideInt("IHTC_VNS_REFRESH_EVERY", c.nurse_refresh_every);
+  EnvOverrideDouble("IHTC_VNS_REFRESH_TOL", c.nurse_refresh_tolerance_pct);
+  EnvOverrideBool("IHTC_VNS_REFRESH", c.refresh_nurses);
+  EnvOverrideBool("IHTC_VNS_COMPOUND", c.enable_compound);
 }
 
 // Imprime una linea separadora
@@ -161,6 +180,9 @@ int main(int argc, char* argv[]) {
   if (legacy) {
     vns_cfg = MakeLegacyVNSConfig();
   }
+  // Overrides VNS por entorno (no-op si no se exporta ninguna var). Se aplican
+  // tras el preset, asi afectan tanto a modo aco como random.
+  ApplyVNSEnvOverrides(vns_cfg);
 
   std::mt19937 rng(seed);
 

@@ -109,23 +109,6 @@ add_executable(ihtc_solver
 target_link_libraries(ihtc_solver PRIVATE ihtc_core)
 
 # =============================================================================
-# Ablation Test Executable
-# =============================================================================
-add_executable(ihtc_ablation
-    src/ablation_test.cpp
-)
-target_link_libraries(ihtc_ablation PRIVATE ihtc_core)
-
-# =============================================================================
-# Solution Evaluator Executable
-# =============================================================================
-add_executable(ihtc_eval
-    src/eval_solution.cpp
-)
-target_link_libraries(ihtc_eval PRIVATE ihtc_core)
-
-
-# =============================================================================
 # Installation Rules
 # =============================================================================
 # Install headers
