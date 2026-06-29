@@ -113,7 +113,10 @@ del componente ACO.
 │       ├── CompoundMoves.{h,cpp}    # Movimientos compuestos
 │       ├── NursePolisher.{h,cpp}    # Pulido final de enfermería
 │       └── RandomGenerator.{h,cpp}  # Constructor voraz aleatorizado
-├── data/                            # 70 instancias (i01-i30, m01-m30, test01-test10)
+├── instances/                       # Instancias del problema (formato JSON)
+│   ├── public-instances/            # Conjunto publico   (i01-i30)
+│   ├── hidden-instances/            # Conjunto oculto    (m01-m30)
+│   └── test-instances/              # Conjunto de prueba (test01-test10)
 ├── best-solutions/                  # 60 mejores soluciones conocidas (sol_i*, sol_m*)
 ├── solutions/                       # Soluciones generadas (salida)
 ├── validator/                       # Validador oficial (IHTP_Validator)
@@ -169,17 +172,17 @@ factibilidad, el desglose de costes y el coste final.
 
 ```bash
 # ACO + VNS con parámetros por defecto (600 s)
-./build/ihtc_solver data/i05.json
+./build/ihtc_solver instances/public-instances/i05.json
 
 # ACO + VNS, semilla 7, 5 minutos
-./build/ihtc_solver data/i05.json 7 5000 100 300 aco
+./build/ihtc_solver instances/public-instances/i05.json 7 5000 100 300 aco
 
 # Constructor aleatorio multi-start (línea base)
-./build/ihtc_solver data/i05.json 42 5000 100 300 random
+./build/ihtc_solver instances/public-instances/i05.json 42 5000 100 300 random
 
 # Lote sobre el conjunto de prueba
 for i in $(seq -w 1 10); do
-  ./build/ihtc_solver data/test${i}.json
+  ./build/ihtc_solver instances/test-instances/test${i}.json
 done
 ```
 
@@ -220,7 +223,7 @@ herramientas de *tuning* automático (irace).
 ```bash
 # Ejemplo: configuración ACO personalizada
 IHTC_N_ANTS=6 IHTC_ALPHA=1.32 IHTC_BETA=1.35 IHTC_RHO=0.20 \
-  ./build/ihtc_solver data/i05.json 42 5000 100 600 aco
+  ./build/ihtc_solver instances/public-instances/i05.json 42 5000 100 600 aco
 ```
 
 ---
@@ -231,7 +234,7 @@ El repositorio incluye el **validador oficial** ya compilado en `validator/IHTP_
 comprueba la factibilidad y calcula el coste de una solución de forma independiente al solver:
 
 ```bash
-./validator/IHTP_Validator data/i05.json solutions/i05_solution.json
+./validator/IHTP_Validator instances/public-instances/i05.json solutions/i05_solution.json
 ```
 
 Para recompilarlo:
@@ -244,8 +247,10 @@ g++ -std=c++17 -O2 -I validator validator/IHTP_Validator.cc -o validator/IHTP_Va
 
 ## Instancias y soluciones de referencia
 
-- **`data/`** contiene 70 instancias en formato JSON: los conjuntos oficiales `i01`–`i30` y
-  `m01`–`m30`, más un conjunto reducido de prueba `test01`–`test10`.
+- **`instances/`** contiene las 70 instancias en formato JSON, organizadas en tres subconjuntos:
+  - `public-instances/` — conjunto público (`i01`–`i30`).
+  - `hidden-instances/` — conjunto oculto (`m01`–`m30`).
+  - `test-instances/` — conjunto reducido de prueba (`test01`–`test10`).
 - **`best-solutions/`** contiene las 60 mejores soluciones conocidas de la competición
   (`sol_i01`–`sol_i30`, `sol_m01`–`sol_m30`), útiles como referencia de calidad.
 - **`solutions/`** es el directorio de salida donde el solver escribe sus resultados.
