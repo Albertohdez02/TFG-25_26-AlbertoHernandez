@@ -44,12 +44,3 @@ lib/
 
 # Dependencies
 *.d
-
-.github/
-.claude/
-ablation_results/
-logs/
-
-ihtc_demo
-
-scripts/
