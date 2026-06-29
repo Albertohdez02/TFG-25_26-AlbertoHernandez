@@ -23,7 +23,6 @@ además un **constructor aleatorio multi-start** que sirve de línea base.
 - [Ejecución](#ejecución)
 - [Ajuste de parámetros (avanzado)](#ajuste-de-parámetros-avanzado)
 - [Validación de soluciones](#validación-de-soluciones)
-- [Instancias y soluciones de referencia](#instancias-y-soluciones-de-referencia)
 - [Contribuciones](#contribuciones)
 - [Licencia](#licencia)
 - [Contacto](#contacto)
@@ -118,6 +117,9 @@ del componente ACO.
 │   ├── hidden-instances/            # Conjunto oculto    (m01-m30)
 │   └── test-instances/              # Conjunto de prueba (test01-test10)
 ├── best-solutions/                  # 60 mejores soluciones conocidas (sol_i*, sol_m*)
+├── raw-runs/                         # 600 ejecuciones ACO-tuned (IRACE) de referencia
+│   ├── public-instances/            # 300 ejecuciones (i01-i30 × 10 semillas)
+│   └── hidden-instances/            # 300 ejecuciones (m01-m30 × 10 semillas)
 ├── solutions/                       # Soluciones generadas (salida)
 ├── validator/                       # Validador oficial (IHTP_Validator)
 ├── CMakeLists.txt
@@ -242,18 +244,6 @@ Para recompilarlo:
 ```bash
 g++ -std=c++17 -O2 -I validator validator/IHTP_Validator.cc -o validator/IHTP_Validator
 ```
-
----
-
-## Instancias y soluciones de referencia
-
-- **`instances/`** contiene las 70 instancias en formato JSON, organizadas en tres subconjuntos:
-  - `public-instances/` — conjunto público (`i01`–`i30`).
-  - `hidden-instances/` — conjunto oculto (`m01`–`m30`).
-  - `test-instances/` — conjunto reducido de prueba (`test01`–`test10`).
-- **`best-solutions/`** contiene las 60 mejores soluciones conocidas de la competición
-  (`sol_i01`–`sol_i30`, `sol_m01`–`sol_m30`), útiles como referencia de calidad.
-- **`solutions/`** es el directorio de salida donde el solver escribe sus resultados.
 
 ---
 
