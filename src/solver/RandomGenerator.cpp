@@ -12,11 +12,7 @@
 #include <limits>
 #include <vector>
 
-/** @brief Genera una solución aleatoria factible.
- *  @param problem Los datos del problema.
- *  @param rng El generador de números aleatorios.
- *  @return La solución generada.
- */
+/** @brief Genera una solucion aleatoria factible. */
 Solution RandomGenerator::Generate(const ProblemData& problem,
                                    std::mt19937& rng) {
   Solution solution(problem);
@@ -28,12 +24,9 @@ Solution RandomGenerator::Generate(const ProblemData& problem,
 }
 
 
-// Construccion: dia a dia para obligatorios, luego opcionales
-
 /** @brief Genera las asignaciones de pacientes.
- *  @param solution La solución a actualizar.
- *  @param problem Los datos del problema.
- *  @param rng El generador de números aleatorios.
+ *  Construccion dia a dia para obligatorios (urgentes primero), reparacion
+ *  forzada de los no asignados y opcionales con probabilidad 0.7.
  */
 void RandomGenerator::GeneratePatientAssignments(Solution& solution,
                                                  const ProblemData& problem,
@@ -68,7 +61,7 @@ void RandomGenerator::GeneratePatientAssignments(Solution& solution,
     }
   }
 
-  // Fase 2: reparacion de obligatorios no asignados 
+  // Fase 2: reparacion de obligatorios no asignados
   for (PatientId pid : mandatory_ids) {
     if (!solution.IsPatientScheduled(pid)) {
       if (!TryAssignPatientFeasibly(solution, pid, problem, rng)) {
@@ -97,11 +90,11 @@ void RandomGenerator::GeneratePatientAssignments(Solution& solution,
 }
 
 
-// Regenera la matriz de enfermeras desde cero
-//
-// Util cuando la matriz acumulo decisiones suboptimas tras muchos movimientos
-// VNS. Borra todas las (room, day, shift) y vuelve a llamar a la greedy.
-// El llamante decide si aceptar o revertir el resultado.
+/** @brief Regenera la matriz de enfermeras desde cero.
+ *  Util cuando la matriz acumulo decisiones suboptimas tras muchos movimientos
+ *  VNS. Borra todas las (room, day, shift) y vuelve a llamar a la greedy.
+ *  El llamante decide si aceptar o revertir el resultado.
+ */
 void RandomGenerator::RegenerateNurses(Solution& solution,
                                        const ProblemData& problem,
                                        std::mt19937& rng) {
@@ -119,12 +112,9 @@ void RandomGenerator::RegenerateNurses(Solution& solution,
 }
 
 
-// Asignacion de enfermeras GREEDY
-
-/** @brief Genera las asignaciones de enfermeras.
- *  @param solution La solución a actualizar.
- *  @param problem Los datos del problema.
- *  @param rng El generador de números aleatorios.
+/** @brief Genera las asignaciones de enfermeras con heuristica greedy.
+ *  Para cada (room, day, shift) ocupado elige la candidata feasible con menor
+ *  puntuacion: penaliza skill insuficiente y sobrecarga, bonifica continuidad.
  */
 void RandomGenerator::GenerateNurseAssignments(Solution& solution,
                                                const ProblemData& problem,
@@ -217,11 +207,8 @@ void RandomGenerator::GenerateNurseAssignments(Solution& solution,
 }
 
 
-// Asigna enfermeras solo donde falta cobertura (idempotente)
-
-/** @brief Garantiza que toda (room, day, shift) con pacientes u ocupantes
- *         tiene una enfermera. Si ya hay una, la deja intacta. Solo rellena
- *         las celdas vacias.
+/** @brief Garantiza que toda (room, day, shift) con pacientes u ocupantes tiene enfermera.
+ *  Idempotente: si ya hay una la deja intacta, solo rellena celdas vacias.
  *  Reutiliza la misma puntuacion que GenerateNurseAssignments para mantener
  *  consistencia (penaliza skill insuficiente y sobrecarga, bonifica
  *  continuidad con el dia anterior).
@@ -309,15 +296,8 @@ void RandomGenerator::EnsureFullNurseCoverage(Solution& solution,
 }
 
 
-// Intenta asignar un paciente en un dia concreto
-
-/** @brief Intenta asignar un paciente en un día concreto.
- *  @param solution La solución a actualizar.
- *  @param day El día en el que intentar la asignación.
- *  @param pid El ID del paciente.
- *  @param problem Los datos del problema.
- *  @param rng El generador de números aleatorios.
- *  @return true si la asignación fue exitosa, false en caso contrario.
+/** @brief Intenta asignar un paciente en un dia concreto.
+ *  @return true si la asignacion tuvo exito, false en caso contrario.
  */
 bool RandomGenerator::TryAssignOnDay(Solution& solution, Day day,
                                      PatientId pid,
@@ -398,7 +378,7 @@ bool RandomGenerator::TryAssignOnDay(Solution& solution, Day day,
   for (const auto& s : scored) rooms.push_back(s.room);
 
   // OTs: ordenar por carga descendente (concentrar cirugias minimiza
-  // `open_ot`). Sin shuffle: el espacio es muy pequeño (2-5 OTs).
+  // `open_ot`). Sin shuffle: el espacio es muy pequeno (2-5 OTs).
   std::sort(ots.begin(), ots.end(),
             [&solution, day](OperatingTheaterId a, OperatingTheaterId b) {
               return solution.GetOTLoad(a, day) >
@@ -419,14 +399,8 @@ bool RandomGenerator::TryAssignOnDay(Solution& solution, Day day,
 }
 
 
-// Intenta asignar un paciente probando todos los dias de su ventana
-
-/** @brief Intenta asignar un paciente probando todos los días de su ventana.
- *  @param solution La solución a actualizar.
- *  @param pid El ID del paciente.
- *  @param problem Los datos del problema.
- *  @param rng El generador de números aleatorios.
- *  @return true si la asignación fue exitosa, false en caso contrario.
+/** @brief Intenta asignar un paciente probando todos los dias de su ventana.
+ *  @return true si la asignacion tuvo exito, false en caso contrario.
  */
 bool RandomGenerator::TryAssignPatientFeasibly(Solution& solution,
                                                PatientId pid,
@@ -447,14 +421,11 @@ bool RandomGenerator::TryAssignPatientFeasibly(Solution& solution,
 }
 
 
-// Desalojar bloqueantes para meter un obligatorio
-
-/** @brief Fuerza la asignación de un paciente obligatorio desalojando a los bloqueantes.
- *  @param solution La solución a actualizar.
- *  @param pid El ID del paciente.
- *  @param problem Los datos del problema.
- *  @param rng El generador de números aleatorios.
- *  @return true si la asignación fue exitosa, false en caso contrario.
+/** @brief Fuerza la asignacion de un obligatorio desalojando a sus bloqueantes.
+ *  Recoge bloqueantes por habitacion, cirujano y OT, los desaloja uno a uno e
+ *  intenta reubicarlos. Si algun obligatorio desalojado no se recoloca, deshace
+ *  todo y revierte al estado previo.
+ *  @return true si la asignacion tuvo exito, false en caso contrario.
  */
 bool RandomGenerator::ForceAssignMandatory(Solution& solution, PatientId pid,
                                             const ProblemData& problem,
@@ -582,12 +553,8 @@ bool RandomGenerator::ForceAssignMandatory(Solution& solution, PatientId pid,
 }
 
 
-// Generadores de candidatos
-
-/** @brief Obtiene los días factibles para la cirugía de un paciente.
- *  @param patient El paciente para el que obtener días factibles.
- *  @param problem Los datos del problema.
- *  @return Un vector con los días factibles.
+/** @brief Obtiene los dias factibles para la cirugia de un paciente.
+ *  Para obligatorios acota el limite superior al surgery_due_day.
  */
 std::vector<Day> RandomGenerator::GetFeasibleDays(const Patient& patient,
                                                    const ProblemData& problem) {
@@ -612,11 +579,7 @@ std::vector<Day> RandomGenerator::GetFeasibleDays(const Patient& patient,
   return days;
 }
 
-/** @brief Obtiene las habitaciones compatibles para un paciente.
- *  @param patient El paciente para el que obtener habitaciones compatibles.
- *  @param problem Los datos del problema.
- *  @return Un vector con los IDs de las habitaciones compatibles.
- */
+/** @brief Obtiene las habitaciones compatibles para un paciente. */
 std::vector<RoomId> RandomGenerator::GetCompatibleRooms(
     const Patient& patient, const ProblemData& problem) {
   std::vector<RoomId> rooms;
@@ -628,11 +591,7 @@ std::vector<RoomId> RandomGenerator::GetCompatibleRooms(
   return rooms;
 }
 
-/** @brief Obtiene los quirófanos abiertos en un día dado.
- *  @param day El día para el que obtener los quirófanos abiertos.
- *  @param problem Los datos del problema.
- *  @return Un vector con los IDs de los quirófanos abiertos.
- */
+/** @brief Obtiene los quirofanos abiertos en un dia dado. */
 std::vector<OperatingTheaterId> RandomGenerator::GetOpenOTs(
     Day day, const ProblemData& problem) {
   std::vector<OperatingTheaterId> ots;

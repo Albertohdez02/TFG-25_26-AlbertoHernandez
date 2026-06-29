@@ -35,24 +35,28 @@
 
 class CompoundMoves {
  public:
-  // Intenta meter un paciente opcional sin programar desalojando un
-  // bloqueante. Para cada opcional no programado, busca un (room, day, ot)
-  // donde la inserccion no es factible por capacidad/genero/cirujano-OT,
-  // identifica al paciente "bloqueante", lo desaloja y lo reubica en su
-  // ventana factible. Si el coste neto mejora, acepta.
-  // Devuelve true si encontro una mejora.
+  /** @brief Mete un opcional no programado desalojando a un bloqueante.
+   *  Para cada opcional, busca un (room, day, ot) donde la insercion no es
+   *  factible por capacidad/genero/cirujano-OT, identifica al paciente
+   *  bloqueante, lo desaloja y lo reubica en su ventana factible. Acepta si el
+   *  coste neto mejora.
+   *  @return true si encontro una mejora.
+   */
   static bool TryKickPatient(Solution& solution, int& current_cost,
                               std::mt19937& rng);
 
-  // Identifica dias con overtime de cirujano u OT, desasigna todos sus
-  // pacientes y los reasigna ordenados por urgencia (slack ascendente).
-  // Snapshot/rollback si no mejora.
+  /** @brief Reorganiza dias con overtime de cirujano u OT.
+   *  Desasigna todos los pacientes del dia y los reasigna ordenados por
+   *  urgencia (slack ascendente). Snapshot/rollback si no mejora.
+   */
   static bool TryReorganizeDay(Solution& solution, int& current_cost,
                                 std::mt19937& rng);
 
-  // Para un bloque de k dias consecutivos (k=3 por defecto), intercambia
-  // las nurses asignadas a (room1, days, shift) con (room2, days, shift).
-  // Solo si ambas son factibles en los k dias. Ataca continuity_of_care.
+  /** @brief Intercambia las nurses de dos habitaciones en un bloque de dias.
+   *  Para k dias consecutivos (k=3 por defecto) intercambia las nurses de
+   *  (room1, days, shift) con (room2, days, shift), solo si ambas son
+   *  factibles en los k dias. Ataca continuity_of_care.
+   */
   static bool TrySwapNurseBlock(Solution& solution, int& current_cost,
                                  std::mt19937& rng);
 };

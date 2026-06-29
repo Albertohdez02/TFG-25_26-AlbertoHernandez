@@ -8,10 +8,8 @@
 #include <unordered_set>
 
 
-// FeasibilityResult
-
-/** @brief Convierte el resultado de la verificación a una cadena de texto.
- *  @return La cadena de texto con el resultado de la verificación.
+/** @brief Convierte el resultado de la verificacion a una cadena de texto.
+ *  Muestra el conteo por restriccion y el detalle de las primeras 20 violaciones.
  */
 std::string FeasibilityResult::ToString() const {
   std::ostringstream oss;
@@ -44,10 +42,7 @@ std::string FeasibilityResult::ToString() const {
   return oss.str();
 }
 
-/** @brief Cuenta cuántas violaciones hay de una restricción específica.
- *  @param constraint El identificador de la restricción (ej. "HC5").
- *  @return El número de violaciones de esa restricción.
- */
+/** @brief Cuenta las violaciones de una restriccion concreta (p.ej. "HC5"). */
 int FeasibilityResult::CountByConstraint(
     const std::string& constraint) const {
   int count = 0;
@@ -58,12 +53,7 @@ int FeasibilityResult::CountByConstraint(
 }
 
 
-// Comprobacion completa
-
-/** @brief Verifica si una solución es factible.
- *  @param solution La solución a verificar.
- *  @return El resultado de la verificación.
- */
+/** @brief Verifica una solucion completa contra todas las restricciones duras. */
 FeasibilityResult FeasibilityChecker::Check(const Solution& solution) {
   FeasibilityResult result;
   const ProblemData& prob = solution.GetProblem();
@@ -84,16 +74,9 @@ FeasibilityResult FeasibilityChecker::Check(const Solution& solution) {
 }
 
 
-// Comprobacion rapida de una asignacion individual (SPATIAL: patient-first)
-// El paciente NO debe estar asignado (caller debe UnassignPatient antes)
-
-/** @brief Verifica si una asignación de paciente es factible.
- *  @param solution La solución a verificar.
- *  @param pid El identificador del paciente.
- *  @param room El identificador de la habitación.
- *  @param admission_day El día de admisión.
- *  @param ot El identificador del quirófano.
- *  @return true si la asignación es factible, false en caso contrario.
+/** @brief Comprobacion rapida de una asignacion individual de paciente (SPATIAL: patient-first).
+ *  El paciente NO debe estar asignado (caller debe UnassignPatient antes).
+ *  Verifica HC2/HC3, HC4, HC5, HC6, HC7, HC8, HC12 y HC13.
  */
 bool FeasibilityChecker::IsFeasiblePatientAssignment(
     const Solution& solution, PatientId pid, RoomId room,
@@ -155,13 +138,8 @@ bool FeasibilityChecker::IsFeasiblePatientAssignment(
   return true;
 }
 
-/** @brief Verifica si una asignación de enfermera es factible.
- *  @param solution La solución a verificar.
- *  @param nurse_id El identificador de la enfermera.
- *  @param room_id El identificador de la habitación.
- *  @param day El día de la asignación.
- *  @param shift El turno de la asignación.
- *  @return true si la asignación es factible, false en caso contrario.
+/** @brief Comprobacion rapida de una asignacion individual de enfermera.
+ *  Verifica HC9 (una enfermera por room/dia/turno) y HC10 (disponibilidad).
  */
 bool FeasibilityChecker::IsFeasibleNurseAssignment(
     const Solution& solution, NurseId nurse_id, RoomId room_id, Day day,
@@ -179,9 +157,7 @@ bool FeasibilityChecker::IsFeasibleNurseAssignment(
 }
 
 
-// Comprobaciones individuales
-
-// HC1: todos los obligatorios programados
+/** @brief HC1: todos los pacientes obligatorios deben estar programados. */
 void FeasibilityChecker::CheckMandatoryScheduled(const Solution& sol,
                                                  const ProblemData& prob,
                                                  FeasibilityResult& result) {
@@ -194,7 +170,7 @@ void FeasibilityChecker::CheckMandatoryScheduled(const Solution& sol,
   }
 }
 
-// HC2/HC3: ventana de admision
+/** @brief HC2/HC3: admision dentro de la ventana [release_day, due_day]. */
 void FeasibilityChecker::CheckAdmissionWindows(const Solution& sol,
                                                const ProblemData& prob,
                                                FeasibilityResult& result) {
@@ -218,7 +194,7 @@ void FeasibilityChecker::CheckAdmissionWindows(const Solution& sol,
   }
 }
 
-// HC4: estancia dentro del horizonte
+/** @brief HC4: el dia de admision debe quedar dentro del horizonte. */
 void FeasibilityChecker::CheckStayInHorizon(const Solution& sol,
                                             const ProblemData& prob,
                                             FeasibilityResult& result) {
@@ -235,7 +211,7 @@ void FeasibilityChecker::CheckStayInHorizon(const Solution& sol,
   }
 }
 
-// HC5: capacidad de habitacion
+/** @brief HC5: la ocupacion de cada habitacion no excede su capacidad. */
 void FeasibilityChecker::CheckRoomCapacity(const Solution& sol,
                                            const ProblemData& prob,
                                            FeasibilityResult& result) {
@@ -253,7 +229,9 @@ void FeasibilityChecker::CheckRoomCapacity(const Solution& sol,
   }
 }
 
-// HC6: mezcla de generos
+/** @brief HC6: no se mezclan generos en una habitacion el mismo dia.
+ *  El valor -2 de GetRoomGender marca el estado de mezcla.
+ */
 void FeasibilityChecker::CheckGenderMixing(const Solution& sol,
                                            const ProblemData& prob,
                                            FeasibilityResult& result) {
@@ -269,7 +247,7 @@ void FeasibilityChecker::CheckGenderMixing(const Solution& sol,
   }
 }
 
-// HC7: habitacion compatible
+/** @brief HC7: cada paciente esta en una habitacion compatible. */
 void FeasibilityChecker::CheckRoomCompatibility(const Solution& sol,
                                                 const ProblemData& prob,
                                                 FeasibilityResult& result) {
@@ -284,7 +262,7 @@ void FeasibilityChecker::CheckRoomCompatibility(const Solution& sol,
   }
 }
 
-// HC8: quirofano abierto
+/** @brief HC8: el quirofano esta abierto el dia de la cirugia. */
 void FeasibilityChecker::CheckOTOpen(const Solution& sol,
                                      const ProblemData& prob,
                                      FeasibilityResult& result) {
@@ -300,7 +278,7 @@ void FeasibilityChecker::CheckOTOpen(const Solution& sol,
   }
 }
 
-// HC10: enfermera disponible
+/** @brief HC10: las enfermeras asignadas estan disponibles en su dia/turno. */
 void FeasibilityChecker::CheckNurseAvailability(const Solution& sol,
                                                 const ProblemData& prob,
                                                 FeasibilityResult& result) {
@@ -323,7 +301,7 @@ void FeasibilityChecker::CheckNurseAvailability(const Solution& sol,
   }
 }
 
-// HC12: cirujano no se pasa de max_surgery_time
+/** @brief HC12: la carga del cirujano no supera max_surgery_time por dia. */
 void FeasibilityChecker::CheckSurgeonOvertime(const Solution& sol,
                                               const ProblemData& prob,
                                               FeasibilityResult& result) {
@@ -341,7 +319,7 @@ void FeasibilityChecker::CheckSurgeonOvertime(const Solution& sol,
   }
 }
 
-// HC13: quirofano no se pasa de availability
+/** @brief HC13: la carga del quirofano no supera su availability por dia. */
 void FeasibilityChecker::CheckOTOvertime(const Solution& sol,
                                          const ProblemData& prob,
                                          FeasibilityResult& result) {
@@ -360,9 +338,10 @@ void FeasibilityChecker::CheckOTOvertime(const Solution& sol,
   }
 }
 
-// HC14: cobertura de enfermeras
-// Toda (room, day, shift) con pacientes u ocupantes debe tener una enfermera
-// asignada. Equivale al UncoveredRoom del validador oficial IHTC.
+/** @brief HC14: toda habitacion ocupada tiene enfermera en cada turno.
+ *  Toda (room, day, shift) con ocupantes debe tener una enfermera asignada.
+ *  Equivale al UncoveredRoom del validador oficial IHTC.
+ */
 void FeasibilityChecker::CheckRoomCoverage(const Solution& sol,
                                            const ProblemData& prob,
                                            FeasibilityResult& result) {

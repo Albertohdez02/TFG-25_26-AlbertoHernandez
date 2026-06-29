@@ -20,61 +20,61 @@
 #include "../evaluator/FeasibilityChecker.h"
 #include "../solution/Solution.h"
 
-/**
- * @brief Generador de soluciones aleatorias factibles.
- */
+/** @brief Generador de soluciones aleatorias factibles. */
 class RandomGenerator {
  public:
-  // genera una solucion aleatoria factible (pacientes + enfermeras)
+  /** @brief Genera una solucion aleatoria factible (pacientes + enfermeras). */
   static Solution Generate(const ProblemData& problem, std::mt19937& rng);
 
-  // genera solo las asignaciones de pacientes
+  /** @brief Genera solo las asignaciones de pacientes. */
   static void GeneratePatientAssignments(Solution& solution,
                                          const ProblemData& problem,
                                          std::mt19937& rng);
 
-  // genera solo las asignaciones de enfermeras (greedy)
+  /** @brief Genera solo las asignaciones de enfermeras (greedy). */
   static void GenerateNurseAssignments(Solution& solution,
                                        const ProblemData& problem,
                                        std::mt19937& rng);
 
-  // garantiza que toda (room, day, shift) con pacientes/ocupantes tiene una
-  // enfermera asignada. Idempotente: respeta las asignaciones existentes y solo
-  // rellena las posiciones donde falta cobertura.
-  // Necesario tras movimientos de LocalSearch que crean nuevas celdas
-  // (room, day) pobladas sin pasar por GenerateNurseAssignments.
+  /** @brief Garantiza que toda (room, day, shift) con pacientes/ocupantes tiene enfermera.
+   *  Idempotente: respeta las asignaciones existentes y solo rellena donde falta cobertura.
+   *  Necesario tras movimientos de LocalSearch que crean nuevas celdas (room, day) pobladas
+   *  sin pasar por GenerateNurseAssignments.
+   */
   static void EnsureFullNurseCoverage(Solution& solution,
                                       const ProblemData& problem,
                                       std::mt19937& rng);
 
-  // borra todas las asignaciones de enfermera y las regenera desde cero con
-  // GenerateNurseAssignments. Util cuando la matriz nurse acumulo decisiones
-  // suboptimas tras muchos movimientos VNS (continuidad rota, sobrecarga).
-  // El llamante es responsable de evaluar la mejora y revertir si empeora.
+  /** @brief Borra todas las asignaciones de enfermera y las regenera desde cero.
+   *  Util cuando la matriz nurse acumulo decisiones suboptimas tras muchos movimientos VNS
+   *  (continuidad rota, sobrecarga). El llamante evalua la mejora y revierte si empeora.
+   */
   static void RegenerateNurses(Solution& solution,
                                 const ProblemData& problem,
                                 std::mt19937& rng);
 
-  // intenta asignar un paciente probando todos los dias de su ventana (sin forzar)
+  /** @brief Intenta asignar un paciente probando todos los dias de su ventana (sin forzar). */
   static bool TryAssignPatientFeasibly(Solution& solution, PatientId pid,
                                        const ProblemData& problem,
                                        std::mt19937& rng);
 
-  // fuerza la asignacion de un obligatorio desalojando bloqueantes si hace falta
+  /** @brief Fuerza la asignacion de un obligatorio desalojando bloqueantes si hace falta. */
   static bool ForceAssignMandatory(Solution& solution, PatientId pid,
                                     const ProblemData& problem,
                                     std::mt19937& rng);
 
  private:
-  // intenta asignar un paciente en un dia concreto, probando rooms y OTs
+  /** @brief Intenta asignar un paciente en un dia concreto, probando rooms y OTs. */
   static bool TryAssignOnDay(Solution& solution, Day day, PatientId pid,
                              const ProblemData& problem, std::mt19937& rng);
 
-  // generadores de candidatos validos
+  /** @brief Devuelve los dias feasibles de la ventana de admision del paciente. */
   static std::vector<Day> GetFeasibleDays(const Patient& patient,
                                            const ProblemData& problem);
+  /** @brief Devuelve las rooms compatibles con el paciente. */
   static std::vector<RoomId> GetCompatibleRooms(const Patient& patient,
                                                  const ProblemData& problem);
+  /** @brief Devuelve las OTs abiertas en el dia. */
   static std::vector<OperatingTheaterId> GetOpenOTs(Day day,
                                                      const ProblemData& problem);
 };

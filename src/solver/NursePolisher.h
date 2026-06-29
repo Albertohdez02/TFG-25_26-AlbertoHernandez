@@ -30,9 +30,11 @@
 
 class NursePolisher {
  public:
-  // Pule la matriz de enfermeras de `solution` durante `time_limit_s`
-  // segundos. Devuelve el numero de mejoras aceptadas.
-  // No modifica las asignaciones de pacientes.
+  /** @brief Pule la matriz de enfermeras de `solution` por hill climbing.
+   *  Hill climbing puro durante `time_limit_s` segundos; no modifica las
+   *  asignaciones de pacientes.
+   *  @return Numero de mejoras aceptadas.
+   */
   static int Polish(Solution& solution, double time_limit_s,
                      std::mt19937& rng);
 };

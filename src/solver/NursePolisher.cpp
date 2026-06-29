@@ -13,14 +13,14 @@
 
 namespace {
 
-// Recoge todas las celdas (r, d, s) que tienen pacientes/ocupantes y por
-// tanto requieren nurse. Las celdas vacias no se tocan.
+/** @brief Celda (r, d, s) que requiere nurse por tener ocupantes. */
 struct Cell {
   RoomId r;
   Day d;
   Shift s;
 };
 
+/** @brief Recoge las celdas (r, d, s) con ocupantes; ignora las vacias. */
 std::vector<Cell> CollectActiveCells(const Solution& sol) {
   const ProblemData& prob = sol.GetProblem();
   int num_rooms = prob.GetNumRooms();
@@ -39,13 +39,11 @@ std::vector<Cell> CollectActiveCells(const Solution& sol) {
   return out;
 }
 
-// =====================================================================
-// Operador 1: ChangeOneNurse - best-improvement por celda
-// =====================================================================
-// Para cada celda con nurse asignada, prueba TODAS las nurses alternativas
-// factibles y elige la que mas reduce el coste. Es best-improvement (no
-// first), por lo que pasa por todas las candidatas antes de decidir.
-// Diferencia clave con TryChangeNurse de VNS: sin cap, exhaustivo.
+/** @brief Operador 1: cambio de nurse best-improvement por celda.
+ *  Para cada celda prueba TODAS las nurses alternativas factibles y elige la
+ *  que mas reduce el coste (best-improvement, no first). A diferencia de
+ *  TryChangeNurse de VNS, es exhaustivo y sin cap.
+ */
 bool ChangeOneNursePass(Solution& sol, int& current_cost,
                         const std::vector<Cell>& cells) {
   const ProblemData& prob = sol.GetProblem();
@@ -65,7 +63,7 @@ bool ChangeOneNursePass(Solution& sol, int& current_cost,
         continue;
       }
 
-      // Aplicar cambio temporal
+      // Aplicar cambio temporal para evaluar
       if (old_nurse != kInvalidId) sol.UnassignNurse(c.r, c.d, c.s);
       sol.AssignNurse(n, c.r, c.d, c.s);
       int new_cost = Evaluator::Evaluate(sol);
@@ -93,19 +91,18 @@ bool ChangeOneNursePass(Solution& sol, int& current_cost,
   return improved_any;
 }
 
-// =====================================================================
-// Operador 2: SwapTwoNurses - intercambio entre dos celdas
-// =====================================================================
-// Para cada par de celdas (mismo shift, diferentes nurses), intenta
-// intercambiar las dos nurses. Acepta si baja el coste.
-// First-improvement por celda exterior para evitar O(N^2) prohibitivo.
+/** @brief Operador 2: intercambio de nurses entre dos celdas del mismo shift.
+ *  Para cada par de celdas (mismo shift, distintas nurses) intenta swap y
+ *  acepta si baja el coste. First-improvement por celda exterior para evitar
+ *  O(N^2) prohibitivo.
+ */
 bool SwapTwoNursesPass(Solution& sol, int& current_cost,
                        const std::vector<Cell>& cells, std::mt19937& rng) {
   bool improved_any = false;
   int n = static_cast<int>(cells.size());
   if (n < 2) return false;
 
-  // Iterar shuffled para evitar sesgo de orden
+  // Iterar en orden aleatorio para evitar sesgo de orden
   std::vector<int> order(n);
   std::iota(order.begin(), order.end(), 0);
   std::shuffle(order.begin(), order.end(), rng);
@@ -119,7 +116,7 @@ bool SwapTwoNursesPass(Solution& sol, int& current_cost,
     NurseId n1 = sol.GetNurseAssignment(c1.r, c1.d, c1.s);
     if (n1 == kInvalidId) continue;
 
-    // Buscar pareja
+    // Buscar pareja para el swap
     for (int oj = oi + 1; oj < n; ++oj) {
       const Cell& c2 = cells[order[oj]];
       if (c1.s != c2.s) continue;  // solo mismo shift
@@ -167,13 +164,11 @@ bool SwapTwoNursesPass(Solution& sol, int& current_cost,
   return improved_any;
 }
 
-// =====================================================================
-// Operador 3: PromoteContinuity
-// =====================================================================
-// Para cada (room, shift), identifica la nurse mas frecuente en la ventana
-// de dias activos. Intenta asignarla a todos los dias activos donde
-// (a) es factible y (b) reduce el coste total. Ataca directamente
-// continuity_of_care.
+/** @brief Operador 3: promueve continuidad asignando la nurse mas frecuente.
+ *  Para cada (room, shift) identifica la nurse mas frecuente en los dias
+ *  activos y la propaga a todos los dias donde sea factible y reduzca el
+ *  coste. Ataca directamente continuity_of_care.
+ */
 bool PromoteContinuityPass(Solution& sol, int& current_cost) {
   const ProblemData& prob = sol.GetProblem();
   int num_rooms = prob.GetNumRooms();
@@ -202,8 +197,8 @@ bool PromoteContinuityPass(Solution& sol, int& current_cost) {
                   return a.second > b.second;
                 });
 
-      // 3. Para la nurse mas frecuente, intentar propagarla a TODOS los
-      //    dias activos donde no esta. Aceptamos solo si baja el coste.
+      // 3. Para la nurse mas frecuente, propagarla a TODOS los dias activos
+      //    donde no esta. Aceptamos solo si baja el coste.
       for (const auto& [candidate, freq] : sorted_nurses) {
         if (static_cast<int>(active_days.size()) == freq) break;  // ya cubre todo
 
@@ -242,9 +237,11 @@ bool PromoteContinuityPass(Solution& sol, int& current_cost) {
 
 }  // namespace
 
-// =====================================================================
-// Punto de entrada
-// =====================================================================
+/** @brief Pulido dedicado de enfermeras aplicando los 3 operadores en bucle.
+ *  Itera hasta convergencia o agotar el tiempo, aplicando a fondo cada
+ *  operador en cada pase.
+ *  @return numero de pases que produjeron mejora.
+ */
 int NursePolisher::Polish(Solution& solution, double time_limit_s,
                            std::mt19937& rng) {
   if (time_limit_s <= 0.0) return 0;
@@ -261,12 +258,10 @@ int NursePolisher::Polish(Solution& solution, double time_limit_s,
   int current_cost = initial_cost;
   int total_improvements = 0;
 
-  // Recoger celdas activas una sola vez (no cambian: dependen de la
-  // asignacion de pacientes, que esta fase NO toca)
+  // Celdas activas se recogen una vez: dependen de la asignacion de
+  // pacientes, que esta fase NO toca
   auto cells = CollectActiveCells(solution);
 
-  // Bucle principal: aplicar los 3 operadores hasta convergencia o
-  // agotamiento de tiempo. Cada operador aplicado a fondo en cada pase.
   bool improved_overall = true;
   int pass = 0;
   while (improved_overall && time_remaining() > 0.1) {
@@ -303,7 +298,7 @@ int NursePolisher::Polish(Solution& solution, double time_limit_s,
       }
     }
 
-    // Safety: si tras 5 pases no hay mejora, salir
+    // Safety: limite duro de pases
     if (pass >= 20) break;
   }
 

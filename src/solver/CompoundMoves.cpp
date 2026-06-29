@@ -11,25 +11,13 @@
 #include "../evaluator/FeasibilityChecker.h"
 #include "RandomGenerator.h"
 
-// ============================================================================
-// TryKickPatient — meter un opcional desalojando un bloqueante
-// ============================================================================
-//
-// Mecanica:
-//   1. Recoger opcionales no programados.
-//   2. Para cada uno (en orden barajado), explorar (room, day, ot) en su
-//      ventana factible. Para cada destino:
-//        a. Si la insercion es factible directamente -> ya cubierto por
-//           TryToggleOptional; saltar.
-//        b. Si no es factible, buscar al paciente "bloqueante" en (room, day):
-//           algun paciente con admission_day == day y patient_ot == ot, o
-//           un paciente cuya estancia llene la capacidad. Es una heuristica
-//           simple, no exhaustiva.
-//        c. Tomar snapshot, desasignar bloqueante, asignar opcional,
-//           intentar reubicar bloqueante en su propia ventana factible.
-//           Si todo encaja y delta < 0, commit. Si no, rollback.
-//   3. First-improvement por paciente opcional.
-//
+/** @brief Inserta un opcional desalojando un paciente bloqueante.
+ *  Para cada opcional no programado explora destinos (room, day, ot) en su
+ *  ventana factible. Si la insercion directa no es factible (la cubre Toggle),
+ *  identifica heuristicamente un bloqueante en (room, day) o (ot, day), lo
+ *  desaloja, inserta el opcional e intenta reubicar el bloqueante en su propia
+ *  ventana. Commit si delta < 0; rollback en caso contrario.
+ */
 bool CompoundMoves::TryKickPatient(Solution& solution, int& current_cost,
                                     std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -167,17 +155,11 @@ bool CompoundMoves::TryKickPatient(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// TryReorganizeDay — desasignar y reasignar todos los pacientes de un dia
-// ============================================================================
-//
-// Mecanica:
-//   1. Identificar dias problematicos (con surgeon_overtime u ot_overtime).
-//   2. Para cada uno (en orden barajado), tomar snapshot, desasignar todos
-//      los pacientes con admission_day == d, reasignarlos en orden de slack
-//      ascendente (mas urgentes primero) usando greedy mejor-fit.
-//   3. Si el coste neto mejora, commit; si no, rollback.
-//
+/** @brief Reasigna todos los pacientes de un dia con overtime para reducirlo.
+ *  Ataca los dias con mayor surgeon_overtime + ot_overtime. Por cada uno
+ *  desasigna los pacientes con admission_day == d y los reasigna en orden de
+ *  slack ascendente (mas restringidos primero). Commit si mejora; rollback si no.
+ */
 bool CompoundMoves::TryReorganizeDay(Solution& solution, int& current_cost,
                                       std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -284,20 +266,11 @@ bool CompoundMoves::TryReorganizeDay(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// TrySwapNurseBlock — intercambiar la nurse de dos rooms para k dias
-// ============================================================================
-//
-// Mecanica:
-//   1. Elegir aleatoriamente un shift, una room1, una room2 (room1 != room2).
-//   2. Elegir un dia inicial d y un bloque de k=3 dias.
-//   3. Para cada uno de los k dias, comprobar:
-//      - room1 tiene nurse n1, room2 tiene nurse n2 (no kInvalidId).
-//      - Ambas asignaciones son intercambiables: n1 disponible en
-//        (day, shift) (ya lo estaba para room2) y viceversa.
-//   4. Snapshot, intercambiar las 2k asignaciones, evaluar.
-//   5. Si mejora, commit; si no, rollback.
-//
+/** @brief Intercambia enfermeras de dos rooms en un shift, bloque de k=3 dias.
+ *  Elige al azar room1 != room2, un shift y un dia inicial. Si en los k dias
+ *  ambas rooms tienen nurse asignada y disponible en (day, shift), intercambia
+ *  las 2k asignaciones. Commit si mejora; rollback si no.
+ */
 bool CompoundMoves::TrySwapNurseBlock(Solution& solution, int& current_cost,
                                        std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();

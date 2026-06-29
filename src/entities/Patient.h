@@ -12,8 +12,12 @@
 
 #include "../common/types.h"
 
+/** @brief Paciente que requiere cirugia y posterior hospitalizacion.
+ *  Puede ser obligatorio u opcional de programar.
+ */
 class Patient {
  public:
+  /** @brief Construye un paciente vacio con valores por defecto. */
   Patient()
       : index_(kInvalidId),
         gender_(kGenderAny),
@@ -25,6 +29,7 @@ class Patient {
         surgery_duration_(0),
         surgeon_id_(kInvalidId) {}
 
+  /** @brief Construye un paciente con todos sus datos. */
   Patient(std::string id, PatientId index, Gender gender, AgeGroup age_group,
           int length_of_stay, std::vector<int> workload,
           std::vector<int> skill_req, bool mandatory, Day release_day,
@@ -44,19 +49,25 @@ class Patient {
         surgeon_id_(surgeon_id),
         incompatible_rooms_(std::move(incompatible_rooms)) {}
 
-  // Getters
+  /** @brief Devuelve el ID original del JSON. */
   [[nodiscard]] const std::string& GetId() const noexcept { return id_; }
+  /** @brief Devuelve el indice interno del paciente. */
   [[nodiscard]] PatientId GetIndex() const noexcept { return index_; }
+  /** @brief Devuelve el genero del paciente. */
   [[nodiscard]] Gender GetGender() const noexcept { return gender_; }
+  /** @brief Devuelve el grupo de edad del paciente. */
   [[nodiscard]] AgeGroup GetAgeGroup() const noexcept { return age_group_; }
+  /** @brief Devuelve los dias de estancia tras la cirugia. */
   [[nodiscard]] int GetLengthOfStay() const noexcept { return length_of_stay_; }
 
+  /** @brief Devuelve el vector de carga producida por turno. */
   [[nodiscard]] const std::vector<int>& GetWorkloadProduced() const noexcept {
     return workload_produced_;
   }
 
-  // carga producida en el (dia-de-estancia, turno).
-  // workload_produced_ tiene length_of_stay * shifts_per_day entradas.
+  /** @brief Devuelve la carga producida en el (dia-de-estancia, turno).
+   *  workload_produced_ tiene length_of_stay * shifts_per_day entradas.
+   */
   [[nodiscard]] int GetWorkloadAt(int day_in_stay,
                                   Shift shift) const noexcept {
     if (length_of_stay_ <= 0) return 0;
@@ -68,12 +79,14 @@ class Patient {
                : 0;
   }
 
+  /** @brief Devuelve el vector de skill requerido por turno. */
   [[nodiscard]] const std::vector<int>& GetSkillLevelRequired() const noexcept {
     return skill_level_required_;
   }
 
-  // skill exigido en el (dia-de-estancia, turno).
-  // skill_level_required_ tiene length_of_stay * shifts_per_day entradas.
+  /** @brief Devuelve el skill exigido en el (dia-de-estancia, turno).
+   *  skill_level_required_ tiene length_of_stay * shifts_per_day entradas.
+   */
   [[nodiscard]] SkillLevel GetSkillLevelAt(int day_in_stay,
                                             Shift shift) const noexcept {
     if (length_of_stay_ <= 0) return 0;
@@ -85,29 +98,33 @@ class Patient {
                : 0;
   }
 
+  /** @brief Indica si el paciente es obligatorio de programar. */
   [[nodiscard]] bool IsMandatory() const noexcept { return mandatory_; }
+  /** @brief Indica si el paciente es opcional. */
   [[nodiscard]] bool IsOptional() const noexcept { return !mandatory_; }
 
+  /** @brief Devuelve el primer dia en que puede operarse. */
   [[nodiscard]] Day GetSurgeryReleaseDay() const noexcept {
     return surgery_release_day_;
   }
+  /** @brief Devuelve el dia limite de operacion. */
   [[nodiscard]] Day GetSurgeryDueDay() const noexcept {
     return surgery_due_day_;
   }
+  /** @brief Devuelve la duracion de la cirugia en minutos. */
   [[nodiscard]] int GetSurgeryDuration() const noexcept {
     return surgery_duration_;
   }
+  /** @brief Devuelve el cirujano asignado. */
   [[nodiscard]] SurgeonId GetSurgeonId() const noexcept { return surgeon_id_; }
 
-  // habitaciones donde NO puede estar
+  /** @brief Devuelve las habitaciones donde el paciente NO puede estar. */
   [[nodiscard]] const std::vector<RoomId>& GetIncompatibleRooms()
       const noexcept {
     return incompatible_rooms_;
   }
 
-  // metodos auxiliares
-
-  // comprueba si puede ir a esta habitacion
+  /** @brief Comprueba si el paciente es compatible con la habitacion dada. */
   [[nodiscard]] bool IsCompatibleWithRoom(RoomId room_id) const noexcept {
     for (RoomId incompatible : incompatible_rooms_) {
       if (incompatible == room_id) return false;
@@ -115,20 +132,22 @@ class Patient {
     return true;
   }
 
-  // puede operarse este dia?
+  /** @brief Indica si puede operarse en el dia dado. */
   [[nodiscard]] bool CanHaveSurgeryOnDay(Day day) const noexcept {
     return day >= surgery_release_day_;
   }
 
-  // dias de espera respecto a release_day (0 si entra el dia mas temprano).
-  // Coincide con la definicion oficial de PatientDelay del IHTC 2024.
+  /** @brief Devuelve los dias de espera respecto a release_day.
+   *  0 si entra el dia mas temprano. Coincide con la definicion oficial de
+   *  PatientDelay del IHTC 2024.
+   */
   [[nodiscard]] int GetDelayDays(Day admission_day) const noexcept {
     return (admission_day > surgery_release_day_)
                ? (admission_day - surgery_release_day_)
                : 0;
   }
 
-  // ultimo dia que ocupa cama
+  /** @brief Devuelve el ultimo dia en que el paciente ocupa cama. */
   [[nodiscard]] Day GetLastDayOfStay(Day admission_day) const noexcept {
     return admission_day + length_of_stay_ - 1;
   }

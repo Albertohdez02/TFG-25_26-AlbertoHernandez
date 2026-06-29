@@ -1,14 +1,13 @@
 // Solution.cpp - Implementacion de la clase Solution
 // TFG Alberto Hernandez
 //
-// Aqui esta toda la logica de asignar/desasignar pacientes
-// y mantener los caches actualizados
+// Logica de asignar/desasignar pacientes y mantenimiento de los caches.
 
 #include "Solution.h"
 
 #include <algorithm>
 
-// inicializa todos los vectores vacios y carga los ocupantes preexistentes
+/** @brief Inicializa los vectores vacios y carga los ocupantes preexistentes. */
 Solution::Solution(const ProblemData& problem)
     : problem_(problem),
       num_rooms_(problem.GetNumRooms()),
@@ -18,7 +17,7 @@ Solution::Solution(const ProblemData& problem)
       num_surgeons_(problem.GetNumSurgeons()),
       num_nurses_(problem.GetNumNurses()),
       num_patients_(problem.GetNumPatients()) {
-  // vectores de decisionsin asignar al principio
+  // variables de decision sin asignar al principio
   patient_room_.resize(num_patients_, kInvalidId);
   patient_admission_day_.resize(num_patients_, kInvalidId);
   patient_ot_.resize(num_patients_, kInvalidId);
@@ -33,11 +32,11 @@ Solution::Solution(const ProblemData& problem)
 
   room_day_patients_.resize(num_rooms_ * num_days_);
 
-  // los ocupantes ya estaban en el hospital, se añaden a los caches
+  // los ocupantes ya estaban en el hospital: se anaden a los caches
   InitializeOccupancyFromOccupants();
 }
 
-// copy constructor - copia profunda de todo
+/** @brief Copy constructor: copia profunda de todo el estado. */
 Solution::Solution(const Solution& other)
     : problem_(other.problem_),
       patient_room_(other.patient_room_),
@@ -59,7 +58,7 @@ Solution::Solution(const Solution& other)
       num_nurses_(other.num_nurses_),
       num_patients_(other.num_patients_) {}
 
-// move constructor - mueve todo con std::move (mas eficiente)
+/** @brief Move constructor: mueve los vectores con std::move. */
 Solution::Solution(Solution&& other) noexcept
     : problem_(other.problem_),
       patient_room_(std::move(other.patient_room_)),
@@ -81,10 +80,10 @@ Solution::Solution(Solution&& other) noexcept
       num_nurses_(other.num_nurses_),
       num_patients_(other.num_patients_) {}
 
-// operador de asignacion por copia
+/** @brief Operador de asignacion por copia. */
 Solution& Solution::operator=(const Solution& other) {
   if (this != &other) {
-    // problem_ es const ref, tiene que ser el mismo problema
+    // problem_ es const ref: tiene que ser el mismo problema
     patient_room_ = other.patient_room_;
     patient_admission_day_ = other.patient_admission_day_;
     patient_ot_ = other.patient_ot_;
@@ -100,7 +99,7 @@ Solution& Solution::operator=(const Solution& other) {
   return *this;
 }
 
-// operadpr de asignacion por movimiento
+/** @brief Operador de asignacion por movimiento. */
 Solution& Solution::operator=(Solution&& other) noexcept {
   if (this != &other) {
     patient_room_ = std::move(other.patient_room_);
@@ -118,32 +117,27 @@ Solution& Solution::operator=(Solution&& other) noexcept {
   return *this;
 }
 
-// ASIGNACION DE PACIENTES
-
-// asigna un paciente, false si ya estaba asignado
+/** @brief Asigna un paciente y actualiza los caches; false si ya estaba asignado. */
 bool Solution::AssignPatient(PatientId patient_id, RoomId room_id,
                              Day admission_day, OperatingTheaterId ot_id) {
-  // si ya esta programado, no lo vuelvo a meter
   if (scheduled_patients_.count(patient_id) > 0) {
     return false;
   }
 
-  // guardar la asignacion
   patient_room_[patient_id] = room_id;
   patient_admission_day_[patient_id] = admission_day;
   patient_ot_[patient_id] = ot_id;
   scheduled_patients_.insert(patient_id);
 
-  // actualizar los caches
   AddPatientToCaches(patient_id, room_id, admission_day, ot_id);
 
   return true;
 }
 
-// quita un paciente del planning
+/** @brief Quita un paciente del planning; false si no estaba asignado. */
 bool Solution::UnassignPatient(PatientId patient_id) {
   if (scheduled_patients_.count(patient_id) == 0) {
-    return false;  // no estaba asignado
+    return false;
   }
 
   // guardar los valores antes de borrarlos para actualizar caches
@@ -151,10 +145,9 @@ bool Solution::UnassignPatient(PatientId patient_id) {
   Day admission_day = patient_admission_day_[patient_id];
   OperatingTheaterId ot_id = patient_ot_[patient_id];
 
-  // primero actualizar, luego borro
+  // primero actualizar los caches, luego borrar las variables
   RemovePatientFromCaches(patient_id, room_id, admission_day, ot_id);
 
-  // marcar como no asignado
   patient_room_[patient_id] = kInvalidId;
   patient_admission_day_[patient_id] = kInvalidId;
   patient_ot_[patient_id] = kInvalidId;
@@ -163,12 +156,12 @@ bool Solution::UnassignPatient(PatientId patient_id) {
   return true;
 }
 
-// mueve un paciente a otra posicion 
+/** @brief Mueve un paciente a otra posicion; false si no estaba ya asignado. */
 bool Solution::ReassignPatient(PatientId patient_id, RoomId new_room_id,
                                Day new_admission_day,
                                OperatingTheaterId new_ot_id) {
   if (scheduled_patients_.count(patient_id) == 0) {
-    return false;  // tiene que estar ya asignado para reasignar
+    return false;
   }
 
   // guardar la asignacion vieja
@@ -179,32 +172,29 @@ bool Solution::ReassignPatient(PatientId patient_id, RoomId new_room_id,
   RemovePatientFromCaches(patient_id, old_room_id, old_admission_day,
                           old_ot_id);
 
-  // actualizar las variables de decision
   patient_room_[patient_id] = new_room_id;
   patient_admission_day_[patient_id] = new_admission_day;
   patient_ot_[patient_id] = new_ot_id;
 
-  // añadir a los caches nuevos
   AddPatientToCaches(patient_id, new_room_id, new_admission_day, new_ot_id);
 
   return true;
 }
 
-// ASIGNACION DE ENFERMERAS
-
-// asigna enfermera a una habitacion-dia-turno
+/** @brief Asigna una enfermera a una habitacion-dia-turno; false si ya hay una.
+ *  Suma a la carga de la enfermera el workload de los pacientes y ocupantes
+ *  presentes en esa habitacion ese dia y turno.
+ */
 bool Solution::AssignNurse(NurseId nurse_id, RoomId room_id, Day day,
                            Shift shift) {
   int idx = RoomDayShiftIndex(room_id, day, shift);
 
-  // hay una enfermera asignada, error
   if (nurse_assignments_[idx] != kInvalidId) {
     return false;
   }
 
   nurse_assignments_[idx] = nurse_id;
 
-  // calcular la carga de trabajo sumando todos los pacientes de esa habitacion ese dia
   const auto& patients_in_room = GetRoomPatients(room_id, day);
   int total_workload = 0;
   for (PatientId pid : patients_in_room) {
@@ -227,16 +217,17 @@ bool Solution::AssignNurse(NurseId nurse_id, RoomId room_id, Day day,
   return true;
 }
 
-// quita enfermera de habitacion-dia-turno
+/** @brief Quita la enfermera de una habitacion-dia-turno; false si no habia.
+ *  Resta de la carga de la enfermera el workload de pacientes y ocupantes.
+ */
 bool Solution::UnassignNurse(RoomId room_id, Day day, Shift shift) {
   int idx = RoomDayShiftIndex(room_id, day, shift);
   NurseId nurse_id = nurse_assignments_[idx];
 
   if (nurse_id == kInvalidId) {
-    return false;  // no habia nadie asignado
+    return false;
   }
 
-  // cuanta carga hay que quitar
   const auto& patients_in_room = GetRoomPatients(room_id, day);
   int total_workload = 0;
   for (PatientId pid : patients_in_room) {
@@ -260,75 +251,81 @@ bool Solution::UnassignNurse(RoomId room_id, Day day, Shift shift) {
   return true;
 }
 
-// CONSULTAS SOBRE ASIGNACIONES
-
+/** @brief Indica si el paciente esta programado. */
 bool Solution::IsPatientScheduled(PatientId patient_id) const noexcept {
   return scheduled_patients_.count(patient_id) > 0;
 }
 
+/** @brief Devuelve la habitacion asignada al paciente. */
 RoomId Solution::GetPatientRoom(PatientId patient_id) const noexcept {
   return patient_room_[patient_id];
 }
 
+/** @brief Devuelve el dia de ingreso del paciente. */
 Day Solution::GetPatientAdmissionDay(PatientId patient_id) const noexcept {
   return patient_admission_day_[patient_id];
 }
 
+/** @brief Devuelve el quirofano asignado al paciente. */
 OperatingTheaterId Solution::GetPatientOT(PatientId patient_id) const noexcept {
   return patient_ot_[patient_id];
 }
 
+/** @brief Devuelve la enfermera asignada a una habitacion-dia-turno. */
 NurseId Solution::GetNurseAssignment(RoomId room_id, Day day,
                                      Shift shift) const noexcept {
   return nurse_assignments_[RoomDayShiftIndex(room_id, day, shift)];
 }
 
+/** @brief Devuelve el conjunto de pacientes programados. */
 const std::unordered_set<PatientId>& Solution::GetScheduledPatients()
     const noexcept {
   return scheduled_patients_;
 }
 
+/** @brief Devuelve el numero de pacientes programados. */
 int Solution::GetNumScheduledPatients() const noexcept {
   return static_cast<int>(scheduled_patients_.size());
 }
 
-// CONSULTAS SOBRE CACHES
-
+/** @brief Devuelve la ocupacion de una habitacion en un dia. */
 int Solution::GetRoomOccupancy(RoomId room_id, Day day) const noexcept {
   return room_occupancy_[RoomDayIndex(room_id, day)];
 }
 
+/** @brief Devuelve la carga del quirofano en un dia. */
 int Solution::GetOTLoad(OperatingTheaterId ot_id, Day day) const noexcept {
   return ot_load_[OtDayIndex(ot_id, day)];
 }
 
+/** @brief Devuelve la carga del cirujano en un dia. */
 int Solution::GetSurgeonLoad(SurgeonId surgeon_id, Day day) const noexcept {
   return surgeon_load_[SurgeonDayIndex(surgeon_id, day)];
 }
 
+/** @brief Devuelve la carga de la enfermera en un dia-turno. */
 int Solution::GetNurseWorkload(NurseId nurse_id, Day day,
                                Shift shift) const noexcept {
   return nurse_workload_[NurseDayShiftIndex(nurse_id, day, shift)];
 }
 
-// devuelve el genero de la habitacion ese dia, o -2 si hay mezcla
+/** @brief Devuelve el genero de la habitacion ese dia, o -2 si hay mezcla. */
 Gender Solution::GetRoomGender(RoomId room_id, Day day) const noexcept {
   return room_gender_[RoomDayIndex(room_id, day)];
 }
 
-// devuelve la lista de pacientes asignados a esa habitacion ese dia (no incluye ocupantes)
+/** @brief Devuelve los pacientes de una habitacion ese dia (sin ocupantes). */
 const std::vector<PatientId>& Solution::GetRoomPatients(RoomId room_id,
                                                         Day day) const noexcept {
   return room_day_patients_[RoomDayIndex(room_id, day)];
 }
 
+/** @brief Devuelve los datos del problema. */
 const ProblemData& Solution::GetProblem() const noexcept {
   return problem_;
 }
 
-// METODOS AUXILIARES 
-
-// carga la ocupacion inicial de los ocupantes
+/** @brief Carga en los caches la ocupacion inicial de los ocupantes. */
 void Solution::InitializeOccupancyFromOccupants() {
   for (const auto& occupant : problem_.GetOccupants()) {
     RoomId room_id = occupant.GetRoomId();
@@ -340,7 +337,6 @@ void Solution::InitializeOccupancyFromOccupants() {
       int idx = RoomDayIndex(room_id, day);
       room_occupancy_[idx] += 1;
 
-      // actualizar el genero de la habitacion
       if (room_gender_[idx] == kGenderAny) {
         room_gender_[idx] = gender;
       } else if (room_gender_[idx] != gender && gender != kGenderAny) {
@@ -350,8 +346,10 @@ void Solution::InitializeOccupancyFromOccupants() {
   }
 }
 
-// añade un paciente a todos los caches (ocupacion, carga de quirofano, 
-// cirujano, enfermeras) cuando lo asignas
+/** @brief Anade un paciente a todos los caches al asignarlo.
+ *  Actualiza ocupacion de habitacion, carga de quirofano, carga de cirujano y
+ *  carga de enfermeras de cada dia de la estancia.
+ */
 void Solution::AddPatientToCaches(PatientId patient_id, RoomId room_id,
                                   Day admission_day, OperatingTheaterId ot_id) {
   const Patient& patient = problem_.GetPatient(patient_id);
@@ -359,10 +357,10 @@ void Solution::AddPatientToCaches(PatientId patient_id, RoomId room_id,
   int surgery_duration = patient.GetSurgeryDuration();
   SurgeonId surgeon_id = patient.GetSurgeonId();
 
-  // ocupacion de habitacion: +1 por cada dia que esta
+  // ocupacion de habitacion: +1 por cada dia de estancia
   for (int d = 0; d < stay_length; ++d) {
     Day day = admission_day + d;
-    if (day >= num_days_) break;  // no me pasar del horizonte
+    if (day >= num_days_) break;  // no pasar del horizonte
 
     int idx = RoomDayIndex(room_id, day);
     room_occupancy_[idx] += 1;
@@ -374,10 +372,9 @@ void Solution::AddPatientToCaches(PatientId patient_id, RoomId room_id,
   // carga del quirofano (la cirugia es el dia de ingreso)
   ot_load_[OtDayIndex(ot_id, admission_day)] += surgery_duration;
 
-  // carga del cirujano
   surgeon_load_[SurgeonDayIndex(surgeon_id, admission_day)] += surgery_duration;
 
-  // carga de enfermeras: si hay enfermera asignada, sumar la carga
+  // carga de enfermeras: solo si hay enfermera asignada a esa habitacion-dia-turno
   for (int d = 0; d < stay_length; ++d) {
     Day day = admission_day + d;
     if (day >= num_days_) break;
@@ -392,7 +389,7 @@ void Solution::AddPatientToCaches(PatientId patient_id, RoomId room_id,
   }
 }
 
-// quita un paciente de todos los caches (cuando se desasigna o se reasigna)
+/** @brief Quita un paciente de todos los caches al desasignar o reasignar. */
 void Solution::RemovePatientFromCaches(PatientId patient_id, RoomId room_id,
                                        Day admission_day,
                                        OperatingTheaterId ot_id) {
@@ -417,10 +414,8 @@ void Solution::RemovePatientFromCaches(PatientId patient_id, RoomId room_id,
     UpdateRoomGender(room_id, day);
   }
 
-  // quitar la carga del quirofano
   ot_load_[OtDayIndex(ot_id, admission_day)] -= surgery_duration;
 
-  // quitar la carga del cirujano
   surgeon_load_[SurgeonDayIndex(surgeon_id, admission_day)] -= surgery_duration;
 
   // quitar la carga de enfermeras
@@ -438,7 +433,7 @@ void Solution::RemovePatientFromCaches(PatientId patient_id, RoomId room_id,
   }
 }
 
-// recalcular el genero de una habitacion-dia (para saber si hay mezcla)
+/** @brief Recalcula el genero de una habitacion-dia (-2 si hay mezcla). */
 void Solution::UpdateRoomGender(RoomId room_id, Day day) {
   int idx = RoomDayIndex(room_id, day);
   const auto& patients = room_day_patients_[idx];

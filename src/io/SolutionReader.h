@@ -17,9 +17,10 @@
 
 using json = nlohmann::json;
 
+/** @brief Lector de soluciones en formato JSON oficial IHTC 2024. */
 class SolutionReader {
  public:
-  // Lee un fichero JSON de solucion y devuelve el objeto Solution reconstruido
+  /** @brief Lee un fichero JSON de solucion y reconstruye el objeto Solution. */
   static Solution Read(const std::string& filepath, const ProblemData& problem) {
     std::ifstream file(filepath);
     if (!file.is_open()) {
@@ -35,7 +36,7 @@ class SolutionReader {
 
     Solution solution(problem);
 
-    // === Seccion patients ===
+    // Seccion patients
     if (j.contains("patients")) {
       for (const auto& p : j["patients"]) {
         std::string pid_str = p["id"].get<std::string>();
@@ -58,7 +59,7 @@ class SolutionReader {
       }
     }
 
-    // === Seccion nurses ===
+    // Seccion nurses
     // Formato: [{id, assignments: [{day, shift, rooms:[...]}]}]
     if (j.contains("nurses")) {
       const auto& shift_names = problem.GetShiftNames();

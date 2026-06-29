@@ -11,10 +11,13 @@
 
 #include "../common/types.h"
 
+/** @brief Enfermera con nivel de habilidad y turnos en los que trabaja. */
 class Nurse {
  public:
+  /** @brief Construye una enfermera vacia con indice invalido. */
   Nurse() : index_(kInvalidId), skill_level_(0) {}
 
+  /** @brief Construye la enfermera con su id, nivel de habilidad y turnos. */
   Nurse(std::string id, NurseId index, SkillLevel skill_level,
         std::vector<WorkingShift> working_shifts)
       : id_(std::move(id)),
@@ -22,18 +25,22 @@ class Nurse {
         skill_level_(skill_level),
         working_shifts_(std::move(working_shifts)) {}
 
+  /** @brief Devuelve el id externo de la enfermera. */
   [[nodiscard]] const std::string& GetId() const noexcept { return id_; }
+  /** @brief Devuelve el indice interno de la enfermera. */
   [[nodiscard]] NurseId GetIndex() const noexcept { return index_; }
+  /** @brief Devuelve el nivel de habilidad. */
   [[nodiscard]] SkillLevel GetSkillLevel() const noexcept {
     return skill_level_;
   }
 
+  /** @brief Devuelve los turnos en los que trabaja. */
   [[nodiscard]] const std::vector<WorkingShift>& GetWorkingShifts()
       const noexcept {
     return working_shifts_;
   }
 
-  // trabaja este dia y turno?
+  /** @brief Indica si la enfermera trabaja en ese dia y turno. */
   [[nodiscard]] bool IsAvailable(Day day, Shift shift) const noexcept {
     for (const auto& ws : working_shifts_) {
       if (ws.day == day && ws.shift_index == shift) {
@@ -43,7 +50,7 @@ class Nurse {
     return false;
   }
 
-  // carga maxima para ese dia-turno (0 si no trabaja)
+  /** @brief Carga maxima para ese dia-turno (0 si no trabaja). */
   [[nodiscard]] int GetMaxWorkload(Day day, Shift shift) const noexcept {
     for (const auto& ws : working_shifts_) {
       if (ws.day == day && ws.shift_index == shift) {
@@ -53,12 +60,12 @@ class Nurse {
     return 0;
   }
 
-  // esta habilitada?
+  /** @brief Indica si su nivel de habilidad cubre el nivel requerido. */
   [[nodiscard]] bool HasSkillLevel(SkillLevel required_skill) const noexcept {
     return skill_level_ >= required_skill;
   }
 
-  // numero de turnos que trabaja
+  /** @brief Numero de turnos que trabaja. */
   [[nodiscard]] int GetNumWorkingShifts() const noexcept {
     return static_cast<int>(working_shifts_.size());
   }

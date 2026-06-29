@@ -3,17 +3,18 @@
 //
 // Pipeline:
 //   1. Parsear instancia del JSON
-//   2a. [modo aco]    ACOSolver::Run — bucle ACO+VNS con aprendizaje de feromona
+//   2a. [modo aco]    ACOSolver::Run - bucle ACO+VNS con aprendizaje de feromona
 //   2b. [modo random] Multi-start: generar N soluciones greedy, mejorar con ILS
 //   3. Evaluar y mostrar desglose final
 //   4. Exportar solucion a JSON
 //
-// Uso: ./ihtc_solver <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode]
+// Uso: ./ihtc_solver <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode] [n_ants]
 //   - seed:     semilla aleatoria (default: 42)
 //   - max_iter: iteraciones maximas de busqueda local (default: 5000)
 //   - restarts: reinicios multi-start, solo en modo random (default: 100)
 //   - time_s:   tiempo global maximo en segundos (default: 600)
 //   - mode:     "aco" (default) o "random"
+//   - n_ants:   hormigas por iteracion (default: 12, solo modo aco)
 
 #include <algorithm>
 #include <chrono>
@@ -35,41 +36,26 @@
 #include "solver/LocalSearch.h"
 #include "solver/RandomGenerator.h"
 
-// Helper: construye un VNSConfig "legacy" (caps duros pre-Bloque-A).
-// Permite reproducir el comportamiento previo desde CLI para benchmarks
-// comparativos sin recompilar.
-static VNSConfig MakeLegacyVNSConfig() {
-  VNSConfig cfg;
-  cfg.max_patients_per_op = 60;
-  cfg.exhaustive_optional = false;
-  cfg.max_insertions_per_optional = 1;
-  cfg.perturb_strength_base = 4;
-  cfg.perturb_strength_max = 4;
-  cfg.perturb_strength_factor = 0.0;
-  cfg.max_combos_relocate = 30;
-  cfg.max_positions_nurse = 100;
-  cfg.refresh_nurses = false;
-  return cfg;
-}
-
-// --- Hooks de tuning por variable de entorno -------------------------------
-// Permiten barrer parametros sin recompilar. Si la variable NO esta definida,
-// el valor por defecto del struct se conserva intacto => comportamiento
-// identico al baseline cuando no se exporta ninguna (fallback garantizado).
+/** @brief Sobrescribe un double desde una variable de entorno si esta definida.
+ *  Si la variable NO esta definida, el valor por defecto se conserva intacto =>
+ *  comportamiento identico al baseline cuando no se exporta ninguna.
+ */
 static void EnvOverrideDouble(const char* name, double& target) {
   const char* v = std::getenv(name);
   if (v != nullptr && v[0] != '\0') target = std::atof(v);
 }
+/** @brief Sobrescribe un int desde una variable de entorno si esta definida. */
 static void EnvOverrideInt(const char* name, int& target) {
   const char* v = std::getenv(name);
   if (v != nullptr && v[0] != '\0') target = std::atoi(v);
 }
+/** @brief Sobrescribe un bool desde una variable de entorno si esta definida. */
 static void EnvOverrideBool(const char* name, bool& target) {
   const char* v = std::getenv(name);
   if (v != nullptr && v[0] != '\0') target = (std::atoi(v) != 0);
 }
 
-// Aplica overrides de los parametros ACO sweepables desde el entorno.
+/** @brief Aplica overrides de los parametros ACO sweepables desde el entorno. */
 static void ApplyACOEnvOverrides(ACOParams& p) {
   EnvOverrideInt("IHTC_N_ANTS", p.n_ants);
   EnvOverrideDouble("IHTC_ALPHA", p.alpha);
@@ -79,9 +65,7 @@ static void ApplyACOEnvOverrides(ACOParams& p) {
   EnvOverrideInt("IHTC_TAU_MIN_FACTOR", p.tau_min_factor);
   EnvOverrideInt("IHTC_STAGNATION_K", p.stagnation_k);
   EnvOverrideDouble("IHTC_POLISH_BUDGET", p.nurse_polish_budget_s);
-  EnvOverrideDouble("IHTC_ACO_QUICK", p.aco_quick_budget_s);  // split ACO/ALNS en hybrid
-  EnvOverrideDouble("IHTC_ALNS_VNS_TIME", p.alns_vns_time_s);
-  // Fase 2 anti-convergencia (opt-in): permitir activarlas por entorno
+  // Fase 2 anti-convergencia (opt-in): activables por entorno
   EnvOverrideBool("IHTC_Q0_DYNAMIC", p.q0_dynamic);
   EnvOverrideDouble("IHTC_Q0_INITIAL", p.q0_initial);
   EnvOverrideDouble("IHTC_Q0_FINAL", p.q0_final);
@@ -90,7 +74,7 @@ static void ApplyACOEnvOverrides(ACOParams& p) {
   EnvOverrideDouble("IHTC_SEED_DAMPEN_FACTOR", p.seed_dampen_factor);
 }
 
-// Aplica overrides de los parametros VNS/ILS sweepables desde el entorno.
+/** @brief Aplica overrides de los parametros VNS/ILS sweepables desde el entorno. */
 static void ApplyVNSEnvOverrides(VNSConfig& c) {
   EnvOverrideInt("IHTC_VNS_MAX_PATIENTS", c.max_patients_per_op);
   EnvOverrideBool("IHTC_VNS_EXHAUSTIVE_OPT", c.exhaustive_optional);
@@ -107,14 +91,16 @@ static void ApplyVNSEnvOverrides(VNSConfig& c) {
   EnvOverrideBool("IHTC_VNS_COMPOUND", c.enable_compound);
 }
 
-// Imprime una linea separadora
+/** @brief Imprime un separador con titulo enmarcado entre lineas de '='. */
 void PrintSeparator(const std::string& title) {
   std::cout << "\n" << std::string(60, '=') << "\n";
   std::cout << "  " << title << "\n";
   std::cout << std::string(60, '=') << "\n";
 }
 
-// Tabla de ocupacion de habitaciones
+/** @brief Imprime la tabla de ocupacion de habitaciones (Room x Day).
+ *  Marca con '!' las celdas donde la ocupacion supera la capacidad.
+ */
 void PrintRoomOccupancy(const Solution& sol, const ProblemData& problem) {
   std::cout << "\nOcupacion de habitaciones (Room x Day):\n";
   std::cout << std::setw(10) << "Room";
@@ -136,12 +122,11 @@ void PrintRoomOccupancy(const Solution& sol, const ProblemData& problem) {
   }
 }
 
+/** @brief Punto de entrada: parsea CLI, ejecuta el solver y exporta la solucion. */
 int main(int argc, char* argv[]) {
   std::cout << "  IHTC 2024 Solver - ACO+VNS / Generacion Aleatoria+ILS\n\n";
 
-  // =========================================
   // Parsear argumentos
-  // =========================================
   std::string instance_file;
   unsigned int seed = 42;
   int max_iterations = 5000;
@@ -149,16 +134,12 @@ int main(int argc, char* argv[]) {
   double global_time_s = 600.0;   // 10 min (requisito de competicion)
   std::string mode = "aco";        // "aco" o "random"
   int n_ants = -1;                 // <0 = usar default de ACOParams
-  std::string perturb_kind = "ils"; // "ils" (default) o "alns" (Etapa 3)
-  std::string preset = "default";   // "default" o "legacy" (Bloque A+B mejoras)
 
   if (argc < 2) {
     std::cerr << "Uso: " << argv[0]
-              << " <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode] [n_ants] [perturb] [preset]\n";
+              << " <instancia.json> [seed] [max_iter] [restarts] [time_s] [mode] [n_ants]\n";
     std::cerr << "  mode: \"aco\" (default) o \"random\"\n";
     std::cerr << "  n_ants: hormigas por iteracion (default 12, solo modo aco)\n";
-    std::cerr << "  perturb: \"ils\" (default) o \"alns\" (Etapa 3, destroy/repair + SA)\n";
-    std::cerr << "  preset: \"default\" (Bloque A+B activos, mejoras 2026-05) o \"legacy\" (caps duros y heuristicas pobres pre-Bloque-A)\n";
     return 1;
   }
 
@@ -169,19 +150,11 @@ int main(int argc, char* argv[]) {
   if (argc >= 6)  global_time_s  = std::atof(argv[5]);
   if (argc >= 7)  mode           = argv[6];
   if (argc >= 8)  n_ants         = std::atoi(argv[7]);
-  if (argc >= 9)  perturb_kind   = argv[8];
-  if (argc >= 10) preset         = argv[9];
 
-  // Construir configs segun preset
-  VNSConfig vns_cfg;  // default agresivo (Bloque A)
-  bool legacy    = (preset == "legacy");
-  bool preset_ab = (preset == "ab");      // A+B sin C
-  bool preset_hybrid = (preset == "hybrid"); // ACO rapido + ALNS+SA dedicado
-  if (legacy) {
-    vns_cfg = MakeLegacyVNSConfig();
-  }
-  // Overrides VNS por entorno (no-op si no se exporta ninguna var). Se aplican
-  // tras el preset, asi afectan tanto a modo aco como random.
+  // Config VNS por defecto (Bloque A+B+C activos). Overrides por entorno
+  // (no-op si no se exporta ninguna var); se aplican sobre el default, asi
+  // afectan tanto a modo aco como random.
+  VNSConfig vns_cfg;
   ApplyVNSEnvOverrides(vns_cfg);
 
   std::mt19937 rng(seed);
@@ -214,12 +187,6 @@ int main(int argc, char* argv[]) {
     std::cout << "  Reinicios multi-start: " << num_restarts << "\n";
   }
   std::cout << "  Tiempo global maximo: " << global_time_s << " s\n";
-  std::cout << "  Preset: " << preset;
-  if (legacy)              std::cout << " (caps duros, heuristicas pobres)";
-  else if (preset_ab)      std::cout << " (Bloque A+B activos, C off)";
-  else if (preset_hybrid)  std::cout << " (modo hibrido ACO-rapido + ALNS+SA dedicado)";
-  else                     std::cout << " (Bloque A+B+C activos)";
-  std::cout << "\n";
 
 
   // PASO 2: Busqueda de la mejor solucion (ACO+VNS o multi-start greedy+ILS)
@@ -236,26 +203,8 @@ int main(int argc, char* argv[]) {
   int best_cost = std::numeric_limits<int>::max();
 
   if (mode == "aco") {
-    // === Modo ACO: colonia de hormigas + VNS ===
-    ACOParams aco_params;  // parametros por defecto (Bloque B activo)
+    ACOParams aco_params;  // parametros por defecto (Bloque A+B+C activos)
     if (n_ants > 0) aco_params.n_ants = n_ants;
-    aco_params.use_alns = (perturb_kind == "alns");
-    if (legacy) {
-      // Bloque B/C desactivado en preset legacy
-      aco_params.rich_eta_room = false;
-      aco_params.rich_eta_day  = false;
-      aco_params.adaptive_warm_start = false;
-      aco_params.use_tau_nurse = false;
-    } else if (preset_ab) {
-      // A+B activos (defaults) pero C off
-      aco_params.use_tau_nurse = false;
-    } else if (preset_hybrid) {
-      // Fase 3: modo hibrido. ACO+VNS corta para construir + ALNS+SA dedicado
-      aco_params.hybrid_mode = true;
-      // n_ants se mantiene (la limitacion es el tiempo, no el numero)
-      // perturb_kind="ils" en el bucle ACO inicial; el ALNS+SA post-ACO
-      // se ejecuta siempre puro
-    }
     aco_params.vns_config = vns_cfg;
     // Overrides de tuning por entorno (no-op si no se exporta ninguna var).
     ApplyACOEnvOverrides(aco_params);
@@ -264,8 +213,6 @@ int main(int argc, char* argv[]) {
               << " beta=" << aco_params.beta << " rho=" << aco_params.rho
               << " q0=" << aco_params.q0
               << " tau_min_factor=" << aco_params.tau_min_factor << "\n";
-    std::cout << "  Perturbacion: "
-              << (aco_params.use_alns ? "ALNS+SA" : "ILS clasico") << "\n";
     best_solution = ACOSolver::Run(problem, rng, max_iterations,
                                    global_time_s, aco_params);
     if (best_solution.GetNumScheduledPatients() > 0) {
@@ -273,7 +220,6 @@ int main(int argc, char* argv[]) {
     }
 
   } else {
-    // === Modo random: multi-start greedy + ILS ===
     int total_improvements = 0;
     std::vector<int>    init_costs;
     std::vector<int>    final_costs;
@@ -289,8 +235,7 @@ int main(int argc, char* argv[]) {
 
       LocalSearchStats ls_stats =
           LocalSearch::Run(candidate, max_iterations, rng, time_for_restart,
-                            /*enabled_mask=*/0xFF, /*use_alns=*/false,
-                            vns_cfg);
+                            /*enabled_mask=*/0xFF, vns_cfg);
       total_improvements += ls_stats.improvements;
 
       init_costs.push_back(init_cost);

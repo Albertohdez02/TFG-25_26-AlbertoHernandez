@@ -12,8 +12,10 @@
 
 #include "../common/types.h"
 
+/** @brief Paciente ya ingresado antes de la planificacion: habitacion fija pero genera carga. */
 class Occupant {
  public:
+  /** @brief Construye un ocupante vacio con identificadores invalidos. */
   Occupant()
       : index_(kInvalidId),
         gender_(kGenderAny),
@@ -21,6 +23,7 @@ class Occupant {
         length_of_stay_(0),
         room_id_(kInvalidId) {}
 
+  /** @brief Construye un ocupante con todos sus datos. */
   Occupant(std::string id, OccupantId index, Gender gender, AgeGroup age_group,
            int length_of_stay, std::vector<int> workload,
            std::vector<int> skill_req, RoomId room_id)
@@ -33,18 +36,26 @@ class Occupant {
         skill_level_required_(std::move(skill_req)),
         room_id_(room_id) {}
 
+  /** @brief Devuelve el identificador textual del ocupante. */
   [[nodiscard]] const std::string& GetId() const noexcept { return id_; }
+  /** @brief Devuelve el indice interno del ocupante. */
   [[nodiscard]] OccupantId GetIndex() const noexcept { return index_; }
+  /** @brief Devuelve el genero del ocupante. */
   [[nodiscard]] Gender GetGender() const noexcept { return gender_; }
+  /** @brief Devuelve el grupo de edad del ocupante. */
   [[nodiscard]] AgeGroup GetAgeGroup() const noexcept { return age_group_; }
+  /** @brief Devuelve los dias de estancia restantes. */
   [[nodiscard]] int GetLengthOfStay() const noexcept { return length_of_stay_; }
 
+  /** @brief Devuelve el vector de carga producida por turno. */
   [[nodiscard]] const std::vector<int>& GetWorkloadProduced() const noexcept {
     return workload_produced_;
   }
 
-  // carga producida en (dia, turno). Para ocupantes el dia-de-estancia
-  // coincide con el dia absoluto (ya estan ingresados desde el dia 0).
+  /** @brief Carga producida en (dia, turno).
+   *  Para ocupantes el dia-de-estancia coincide con el dia absoluto (ya estan
+   *  ingresados desde el dia 0).
+   */
   [[nodiscard]] int GetWorkloadAt(int day, Shift shift) const noexcept {
     if (length_of_stay_ <= 0) return 0;
     int shifts_per_day =
@@ -55,11 +66,12 @@ class Occupant {
                : 0;
   }
 
+  /** @brief Devuelve el vector de skill exigido por turno. */
   [[nodiscard]] const std::vector<int>& GetSkillLevelRequired() const noexcept {
     return skill_level_required_;
   }
 
-  // skill exigido en (dia, turno) durante la estancia del ocupante.
+  /** @brief Skill exigido en (dia, turno) durante la estancia del ocupante. */
   [[nodiscard]] SkillLevel GetSkillLevelAt(int day,
                                             Shift shift) const noexcept {
     if (length_of_stay_ <= 0) return 0;
@@ -71,15 +83,15 @@ class Occupant {
                : 0;
   }
 
-  // habitacion asignada (fija, no cambia)
+  /** @brief Devuelve la habitacion asignada (fija, no cambia). */
   [[nodiscard]] RoomId GetRoomId() const noexcept { return room_id_; }
 
-  // sigue en el hospital este dia?
+  /** @brief Indica si el ocupante sigue en el hospital ese dia. */
   [[nodiscard]] bool IsPresentOnDay(Day day) const noexcept {
     return day < length_of_stay_;
   }
 
-  // ultimo dia que esta
+  /** @brief Devuelve el ultimo dia de estancia del ocupante. */
   [[nodiscard]] Day GetLastDayOfStay() const noexcept {
     return length_of_stay_ - 1;
   }

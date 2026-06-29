@@ -21,14 +21,12 @@
 
 #include "../evaluator/Evaluator.h"
 #include "../evaluator/FeasibilityChecker.h"
-#include "ALNSPerturbation.h"
 #include "LocalSearch.h"
 #include "NursePolisher.h"
 #include "RandomGenerator.h"
 
-// ============================================================================
+
 // Run - bucle principal ACO + VNS
-// ============================================================================
 
 /** @brief Ejecuta el algoritmo ACO hibrido con VNS.
  *  @param problem  Datos del problema.
@@ -55,26 +53,9 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
     polish_budget = std::clamp(polish_budget, 30.0, time_limit_s * 0.30);
   }
 
-  // Some-touches Fase 3: modo hibrido. Reserva un budget grande para el
-  // bucle ALNS+SA puro tras la fase ACO inicial.
-  double alns_pure_budget = 0.0;
-  double aco_time_budget;
-  if (params.hybrid_mode) {
-    // aco_quick_budget controla la duracion del bucle ACO (encontrar
-    // una buena solucion inicial); el resto del tiempo (excepto polish)
-    // va al bucle ALNS+SA puro.
-    double aco_quick = std::clamp(params.aco_quick_budget_s,
-                                    30.0, time_limit_s * 0.30);
-    aco_time_budget = aco_quick;
-    alns_pure_budget = time_limit_s - aco_quick - polish_budget;
-    if (alns_pure_budget < 10.0) {
-      // Tiempo total insuficiente para hybrid; degradar a modo normal
-      aco_time_budget = time_limit_s - polish_budget;
-      alns_pure_budget = 0.0;
-    }
-  } else {
-    aco_time_budget = time_limit_s - polish_budget;
-  }
+  // El bucle ACO se ejecuta dentro de (time_limit_s - polish_budget); el
+  // polisher final dispone de polish_budget.
+  double aco_time_budget = time_limit_s - polish_budget;
   auto remaining_s = [&]() { return aco_time_budget - elapsed_s(); };
 
   int num_patients = problem.GetNumPatients();
@@ -125,8 +106,7 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
     std::mt19937 seed_rng(rng());
     Solution seed = RandomGenerator::Generate(problem, seed_rng);
     LocalSearch::Run(seed, max_ls_iter, seed_rng, warm_budget,
-                     /*enabled_mask=*/0xFF, params.use_alns,
-                     params.vns_config);
+                     /*enabled_mask=*/0xFF, params.vns_config);
     if (FeasibilityChecker::Check(seed).feasible) {
       int seed_cost = Evaluator::Evaluate(seed);
       if (seed_cost > 0) {
@@ -202,8 +182,7 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
           // 2. mejora con VNS (tiempo fijo por batch)
           LocalSearchStats st = LocalSearch::Run(
               candidate, max_ls_iter, local_rng, batch_ls_time,
-              /*enabled_mask=*/0xFF, params.use_alns,
-              params.vns_config);
+              /*enabled_mask=*/0xFF, params.vns_config);
           results[k].solution = std::move(candidate);
           results[k].cost     = st.final_cost;
           results[k].valid    = true;
@@ -272,51 +251,6 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
     }
   }
 
-  // Some-touches Fase 3: bucle ALNS+SA puro tras el bucle ACO. Solo en
-  // modo hibrido. Repetir destroy/repair + VNS corta hasta agotar el
-  // alns_pure_budget. Recalibra T_0 con el coste real de best_solution.
-  if (params.hybrid_mode && alns_pure_budget > 1.0 &&
-      best_cost < std::numeric_limits<int>::max()) {
-    int before_alns = best_cost;
-    int alns_applies = 0;
-    int alns_accepts = 0;
-
-    ALNSPerturbation alns(problem, best_cost);
-    auto alns_t0 = std::chrono::steady_clock::now();
-    auto alns_remaining = [&]() {
-      double elapsed = std::chrono::duration<double>(
-          std::chrono::steady_clock::now() - alns_t0).count();
-      return alns_pure_budget - elapsed;
-    };
-
-    // Estado de trabajo: arrancamos desde best_solution
-    Solution work_sol = best_solution;
-    int work_cost = best_cost;
-
-    double vns_time = std::max(0.5, params.alns_vns_time_s);
-
-    while (alns_remaining() > vns_time + 1.0) {
-      ++alns_applies;
-      if (alns.Apply(work_sol, work_cost, rng)) {
-        ++alns_accepts;
-        // VNS corta tras un Apply aceptado para refinar
-        LocalSearch::Run(work_sol, max_ls_iter, rng, vns_time,
-                          /*enabled_mask=*/0xFF, params.use_alns,
-                          params.vns_config);
-        // tras VNS la solucion puede haber cambiado; re-evaluar
-        work_cost = Evaluator::Evaluate(work_sol);
-        if (work_cost < best_cost &&
-            FeasibilityChecker::Check(work_sol).feasible) {
-          best_cost = work_cost;
-          best_solution = work_sol;
-        }
-      }
-    }
-    std::cout << "  ALNS puro: " << before_alns << " -> " << best_cost
-              << " (" << alns_applies << " applies, "
-              << alns_accepts << " accepts)\n";
-  }
-
   // Some-touches Fase 1 - Pulido final dedicado a enfermeras.
   // Se ejecuta sobre la mejor solucion factible encontrada, dentro de un
   // presupuesto separado (params.nurse_polish_budget_s).
@@ -335,9 +269,6 @@ Solution ACOSolver::Run(const ProblemData& problem, std::mt19937& rng,
   return best_solution;
 }
 
-// ============================================================================
-// InitPheromones
-// ============================================================================
 
 /** @brief Inicializa las matrices de feromona.
  *  Asigna tau_init a posiciones feasibles (ventana de tiempo y compatibilidad
@@ -375,9 +306,6 @@ void ACOSolver::InitPheromones(PheromoneMatrix& tau_day,
   }
 }
 
-// ============================================================================
-// PrecomputeHeuristics
-// ============================================================================
 
 /** @brief Precomputa la heuristica eta para dias y habitaciones.
  *  eta_day[p][d]: inversamente proporcional al coste de delay (menos retraso = mejor).
@@ -466,7 +394,7 @@ void ACOSolver::PrecomputeHeuristics(std::vector<double>& eta_day,
                                  static_cast<int>(pagegroup));
         penalty += static_cast<double>(w.room_mixed_age) * age_diff;
       }
-      // pequeño bonus a capacidad mayor (rooms grandes diluyen mejor)
+      // pequeno bonus a capacidad mayor (rooms grandes diluyen mejor)
       int cap = problem.GetRoom(r).GetCapacity();
       if (cap > 0) {
         penalty += 1.0 / static_cast<double>(cap);
@@ -477,9 +405,6 @@ void ACOSolver::PrecomputeHeuristics(std::vector<double>& eta_day,
   }
 }
 
-// ============================================================================
-// SelectByScore - regla pseudoproporcional ACS
-// ============================================================================
 
 /** @brief Selecciona un indice de la lista de scores.
  *  Con probabilidad q0 devuelve el argmax (explotacion).
@@ -517,9 +442,6 @@ int ACOSolver::SelectByScore(const std::vector<double>& scores,
   return best_idx;  // fallback por precision numerica
 }
 
-// ============================================================================
-// ConstructSolution - construccion guiada por feromonas
-// ============================================================================
 
 /** @brief Construye una solucion siguiendo las feromonas y la heuristica.
  *  Orden de asignacion: obligatorios por urgencia (slack ascendente),
@@ -587,7 +509,7 @@ Solution ACOSolver::ConstructSolution(const PheromoneMatrix& tau_day,
     return false;
   };
 
-  // --- funcion principal de asignacion por ACO ---
+  // funcion principal de asignacion por ACO 
   auto assign_one = [&](PatientId pid) -> bool {
     const Patient& p = problem.GetPatient(pid);
     Day release = p.GetSurgeryReleaseDay();
@@ -675,7 +597,6 @@ Solution ACOSolver::ConstructSolution(const PheromoneMatrix& tau_day,
     return false;
   };
 
-  // === asignacion de pacientes obligatorios ===
   for (PatientId pid : mandatory_ids) {
     if (!assign_one(pid)) {
       // reparacion: intentar sin guia de feromona
@@ -685,14 +606,12 @@ Solution ACOSolver::ConstructSolution(const PheromoneMatrix& tau_day,
     }
   }
 
-  // === asignacion de pacientes opcionales ===
   for (PatientId pid : optional_ids) {
     if (!sol.IsPatientScheduled(pid)) {
       assign_one(pid);
     }
   }
 
-  // === asignacion de enfermeras ===
   // C1: si use_tau_nurse, usar la variante ACO que combina tau_nurse y
   // eta_nurse heuristica. Si no, la greedy clasica (legacy).
   if (params.use_tau_nurse && !tau_nurse.empty()) {
@@ -704,9 +623,6 @@ Solution ACOSolver::ConstructSolution(const PheromoneMatrix& tau_day,
   return sol;
 }
 
-// ============================================================================
-// UpdatePheromones - MMAS
-// ============================================================================
 
 /** @brief Actualiza las matrices de feromona segun MMAS.
  *  Evapara todas las feromonas y deposita en las componentes de la mejor solucion.
@@ -797,9 +713,6 @@ void ACOSolver::UpdatePheromones(PheromoneMatrix& tau_day,
   }
 }
 
-// ============================================================================
-// ResetPheromones
-// ============================================================================
 
 /** @brief Reinicializa todas las feromonas a tau_init.
  *  Se llama cuando se detecta estancamiento (stagnation_k iters sin mejora).
@@ -815,9 +728,6 @@ void ACOSolver::ResetPheromones(PheromoneMatrix& tau_day,
   }
 }
 
-// ============================================================================
-// InitPheromonesNurse (C1)
-// ============================================================================
 
 /** @brief Inicializa tau_nurse[shift_type][nurse] a tau_init en las
  *         (s, n) donde la enfermera trabaja en al menos un dia con ese shift.
@@ -846,9 +756,6 @@ void ACOSolver::InitPheromonesNurse(PheromoneMatrix& tau_nurse,
   }
 }
 
-// ============================================================================
-// SeedPheromones
-// ============================================================================
 
 /** @brief Sembra feromona alta en las decisiones de una solucion semilla y
  *         baja en el resto de posiciones feasibles, creando el contraste
@@ -936,9 +843,6 @@ void ACOSolver::SeedPheromones(PheromoneMatrix& tau_day,
   }
 }
 
-// ============================================================================
-// GenerateNurseAssignmentsACO (C1) — asignacion de enfermeras guiada por ACO
-// ============================================================================
 
 /** @brief Asigna enfermeras a (room, day, shift) con pacientes/ocupantes
  *         usando tau_nurse[shift][nurse] como feromona aprendida y una
@@ -1018,7 +922,7 @@ void ACOSolver::GenerateNurseAssignmentsACO(Solution& solution,
             }
           }
 
-          // sobrecarga (current_workload del turno + carga que añadiriamos)
+          // sobrecarga (current_workload del turno + carga que anadiriamos)
           int current_workload = solution.GetNurseWorkload(n, d, s);
           int added_workload = 0;
           for (PatientId pid : room_pats) {

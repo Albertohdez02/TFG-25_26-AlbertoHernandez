@@ -11,12 +11,7 @@
 #include <sstream>
 #include <unordered_set>
 
-// Desglose de costes
-
-/**
-  @brief Convierte el desglose de costes a una cadena de texto.
-  @return La cadena de texto con el desglose de costes.
-*/
+/** @brief Convierte el desglose de costes a una cadena de texto legible. */
 std::string CostBreakdown::ToString() const {
   std::ostringstream oss;
   oss << "- Desglose de costes -\n";
@@ -37,22 +32,14 @@ std::string CostBreakdown::ToString() const {
   return oss.str();
 }
 
-// Evaluacion
-
-/**
-  @brief Evalua la funcion objetivo.
-  @param solution La solucion a evaluar.
-  @return El valor de la funcion objetivo.
-*/
+/** @brief Evalua la funcion objetivo y devuelve el coste total. */
 int Evaluator::Evaluate(const Solution& solution) {
   return EvaluateDetailed(solution).Total();
 }
 
-/**
-  @brief Evalua cada componente de la funcion objetivo por separado, para tener un desglose detallado de los costes.
-  @param solution La solucion a evaluar.
-  @return Un objeto CostBreakdown con el coste de cada componente y el total.
-*/ 
+/** @brief Evalua cada componente de la funcion objetivo por separado.
+ *  @return CostBreakdown con el coste de cada componente y el total.
+ */
 CostBreakdown Evaluator::EvaluateDetailed(const Solution& solution) {
   const ProblemData& prob = solution.GetProblem();
   CostBreakdown bd;
@@ -73,15 +60,7 @@ CostBreakdown Evaluator::EvaluateDetailed(const Solution& solution) {
   return bd;
 }
 
-
-// Componentes individuales
-
-/**
-  @brief Calcula el coste asociado a la violación de la capacidad de las habitaciones HC.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado a la violación de la capacidad de las habitaciones.
-*/
+/** @brief Calcula el coste por violacion de la capacidad de las habitaciones (HC7). */
 int Evaluator::CalcRoomCapacityCost(const Solution& sol,
                                     const ProblemData& prob) {
   int cost = 0;
@@ -98,12 +77,9 @@ int Evaluator::CalcRoomCapacityCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado a la violación de la mezcla de género en las habitaciones.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado a la violación de la mezcla de género en las habitaciones.
-*/
+/** @brief Calcula el coste por violacion de la mezcla de genero en las habitaciones.
+ *  Penaliza cada (habitacion, dia) marcado con genero mixto (g == -2).
+ */
 int Evaluator::CalcRoomGenderMixCost(const Solution& sol,
                                      const ProblemData& prob) {
   int cost = 0;
@@ -119,12 +95,10 @@ int Evaluator::CalcRoomGenderMixCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado a la violación de la mezcla de edad en las habitaciones.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado a la violación de la mezcla de edad en las habitaciones.
-*/
+/** @brief Calcula el coste por mezcla de grupos de edad en las habitaciones.
+ *  Penaliza (numero de grupos de edad distintos - 1) por (habitacion, dia),
+ *  contando tanto ocupantes previos como pacientes asignados.
+ */
 int Evaluator::CalcRoomMixedAgeCost(const Solution& sol,
                                     const ProblemData& prob) {
   int cost = 0;
@@ -154,12 +128,7 @@ int Evaluator::CalcRoomMixedAgeCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado al retraso en la programación de los pacientes.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado al retraso en la programación de los pacientes.
-*/
+/** @brief Calcula el coste por retraso en la admision de los pacientes programados. */
 int Evaluator::CalcPatientDelayCost(const Solution& sol,
                                     const ProblemData& prob) {
   int cost = 0;
@@ -174,12 +143,7 @@ int Evaluator::CalcPatientDelayCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado a los pacientes opcionales no programados.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado a los pacientes opcionales no programados.
-*/
+/** @brief Calcula el coste por pacientes opcionales no programados. */
 int Evaluator::CalcUnscheduledOptionalCost(const Solution& sol,
                                            const ProblemData& prob) {
   int cost = 0;
@@ -192,12 +156,9 @@ int Evaluator::CalcUnscheduledOptionalCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado al tiempo extra de los cirujanos.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado al tiempo extra de los cirujanos.
-*/
+/** @brief Calcula el coste por horas extra de los cirujanos.
+ *  Penaliza la carga diaria que excede el tiempo maximo de cirugia del cirujano.
+ */
 int Evaluator::CalcSurgeonOvertimeCost(const Solution& sol,
                                        const ProblemData& prob) {
   int cost = 0;
@@ -214,12 +175,9 @@ int Evaluator::CalcSurgeonOvertimeCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado al tiempo extra de los quirófanos.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado al tiempo extra de los quirófanos.
-*/
+/** @brief Calcula el coste por horas extra de los quirofanos.
+ *  Penaliza la carga diaria que excede la disponibilidad del quirofano.
+ */
 int Evaluator::CalcOtOvertimeCost(const Solution& sol,
                                   const ProblemData& prob) {
   int cost = 0;
@@ -236,12 +194,7 @@ int Evaluator::CalcOtOvertimeCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado a los quirófanos abiertos.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado a los quirófanos abiertos.
-*/
+/** @brief Calcula el coste por quirofanos abiertos (con carga > 0). */
 int Evaluator::CalcOpenOtCost(const Solution& sol, const ProblemData& prob) {
   int cost = 0;
   int weight = prob.GetWeights().open_operating_theater;
@@ -257,12 +210,10 @@ int Evaluator::CalcOpenOtCost(const Solution& sol, const ProblemData& prob) {
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado a la falta de habilidad de las enfermeras para atender a los pacientes asignados.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado a la falta de habilidad de las enfermeras para atender a los pacientes asignados.
-*/
+/** @brief Calcula el coste por falta de skill de las enfermeras frente a lo requerido.
+ *  Por cada (habitacion, dia, turno) con enfermera asignada, penaliza el deficit
+ *  de skill respecto al nivel requerido por cada paciente y ocupante presente.
+ */
 int Evaluator::CalcNurseSkillCost(const Solution& sol,
                                   const ProblemData& prob) {
   int cost = 0;
@@ -304,12 +255,9 @@ int Evaluator::CalcNurseSkillCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado al workload excesivo de las enfermeras.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado al workload excesivo de las enfermeras.
-*/
+/** @brief Calcula el coste por workload excesivo de las enfermeras.
+ *  Penaliza la carga de cada turno trabajado que excede su max_load.
+ */
 int Evaluator::CalcNurseExcessiveWorkloadCost(const Solution& sol,
                                               const ProblemData& prob) {
   int cost = 0;
@@ -328,12 +276,10 @@ int Evaluator::CalcNurseExcessiveWorkloadCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado a la continuidad de la atención.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado a la continuidad de la atención.
-*/
+/** @brief Calcula el coste por falta de continuidad de cuidado.
+ *  Por paciente y turno, penaliza (numero de enfermeras distintas - 1) que lo
+ *  atienden a lo largo de su estancia.
+ */
 int Evaluator::CalcContinuityOfCareCost(const Solution& sol,
                                         const ProblemData& prob) {
   int cost = 0;
@@ -366,12 +312,9 @@ int Evaluator::CalcContinuityOfCareCost(const Solution& sol,
   return cost;
 }
 
-/**
-  @brief Calcula el coste asociado a la transferencia de cirujanos.
-  @param sol La solución a evaluar.
-  @param prob Los datos del problema.
-  @return El coste total asociado a la transferencia de cirujanos.
-*/
+/** @brief Calcula el coste por transferencia de cirujanos entre quirofanos.
+ *  Por (cirujano, dia), penaliza (numero de quirofanos distintos usados - 1).
+ */
 int Evaluator::CalcSurgeonTransferCost(const Solution& sol,
                                        const ProblemData& prob) {
   int cost = 0;

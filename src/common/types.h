@@ -8,31 +8,29 @@
 #include <limits>
 #include <string>
 
-// tipos de ID
-// todos son int para poder usarlos como indices de vectores directamente
-using PatientId = int;          // indice en el vector de pacientes
-using OccupantId = int;         // indice en el vector de ocupantes
-using RoomId = int;             // indice en el vector de habitaciones
-using NurseId = int;            // indice en el vector de enfermeras
-using SurgeonId = int;          // indice en el vector de cirujanos
-using OperatingTheaterId = int; // indice en el vector de quirofanos
+// Tipos de ID: todos int para usarlos como indices de vectores directamente.
+using PatientId = int;
+using OccupantId = int;
+using RoomId = int;
+using NurseId = int;
+using SurgeonId = int;
+using OperatingTheaterId = int;
 using Day = int;                // dia (empieza en 0)
-using Shift = int;              // turno (0=mañana, 1=tarde, 2=noche)
-using SkillLevel = int;         // nivel de habilidad de enfermeras
-using AgeGroup = int;           // grupo de edad
+using Shift = int;              // turno (0=manana, 1=tarde, 2=noche)
+using SkillLevel = int;
+using AgeGroup = int;
 using Gender = int;             // genero (0=mujer, 1=hombre, -1=cualquiera)
 
-// constantes
+// Constantes globales.
 constexpr int kInvalidId = -1;  // cuando algo no esta asignado
 constexpr Gender kGenderAny = -1;
 constexpr Gender kGenderFemale = 0;
 constexpr Gender kGenderMale = 1;
 constexpr int kMaxDays = 21;    // maximo de dias en el horizonte
 constexpr int kDefaultNumShifts = 3;
-constexpr int kInfiniteCost = std::numeric_limits<int>::max() / 2;  // coste muy alto para penalizaciones
+constexpr int kInfiniteCost = std::numeric_limits<int>::max() / 2;  // coste alto para penalizaciones
 
-// pesos de la funcion objetivo 
-// cada peso indica cuanto penaliza violar esa restriccion blanda
+/** @brief Pesos de la funcion objetivo: penalizacion por violar cada restriccion blanda. */
 struct Weights {
   int room_mixed_age = 0;              // mezclar edades en habitacion
   int room_nurse_skill = 0;            // enfermera sin suficiente skill
@@ -48,8 +46,7 @@ struct Weights {
   int surgeon_transfer = 0;            // cirujano cambiando de quirofano
 };
 
-// Turno de trabajo de enfermera
-// guarda en que dia y turno trabaja, y cuanta carga aguanta
+/** @brief Turno de trabajo de enfermera: dia, turno y carga maxima que aguanta. */
 struct WorkingShift {
   Day day;
   Shift shift_index;
@@ -59,17 +56,16 @@ struct WorkingShift {
   WorkingShift(Day d, Shift s, int ml) : day(d), shift_index(s), max_load(ml) {}
 };
 
-// funciones para aplanar indices
-// En vez de usar vector<vector<int>> uso un solo vector y calculo el indice
-// evita saltos de memoria 
+// Aplanado de indices: un solo vector en vez de vector<vector<int>> evita
+// saltos de memoria.
 
-// convierte coordenadas 2D a indice 1D: idx = row * num_cols + col
+/** @brief Convierte coordenadas 2D a indice 1D: idx = row * num_cols + col. */
 [[nodiscard]] inline constexpr int FlatIndex2D(int row, int col,
                                                int num_cols) noexcept {
   return row * num_cols + col;
 }
 
-// convierte coordenadas 3D a indice 1D
+/** @brief Convierte coordenadas 3D a indice 1D. */
 [[nodiscard]] inline constexpr int FlatIndex3D(int d1, int d2, int d3,
                                                int size_d2,
                                                int size_d3) noexcept {

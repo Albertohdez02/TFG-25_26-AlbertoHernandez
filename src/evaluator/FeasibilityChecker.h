@@ -30,7 +30,7 @@
 #include "../entities/ProblemData.h"
 #include "../solution/Solution.h"
 
-// Una violacion individual con descripcion legible
+/** @brief Violacion individual de una restriccion dura con descripcion legible. */
 struct Violation {
   std::string constraint;  // ej. "HC5"
   std::string description; // ej. "Room R1 Day 3: occupancy 4 > capacity 2"
@@ -39,63 +39,90 @@ struct Violation {
       : constraint(std::move(c)), description(std::move(d)) {}
 };
 
-// Resultado completo de la comprobacion de factibilidad
+/** @brief Resultado completo de la comprobacion de factibilidad. */
 struct FeasibilityResult {
   bool feasible = true;
   std::vector<Violation> violations;
 
+  /** @brief Registra una violacion y marca la solucion como no feasible. */
   void AddViolation(const std::string& constraint,
                     const std::string& description) {
     feasible = false;
     violations.emplace_back(constraint, description);
   }
 
+  /** @brief Devuelve un resumen legible de todas las violaciones. */
   [[nodiscard]] std::string ToString() const;
+
+  /** @brief Cuenta las violaciones de una restriccion concreta. */
   [[nodiscard]] int CountByConstraint(const std::string& constraint) const;
 };
 
+/** @brief Verificador de las restricciones duras (HC) del IHTC 2024. */
 class FeasibilityChecker {
  public:
-  // comprueba todas las restricciones duras
+  /** @brief Comprueba todas las restricciones duras de la solucion. */
   static FeasibilityResult Check(const Solution& solution);
 
-  // comprobacion rapida de una asignacion individual (patient-first, spatial)
-  // el paciente NO debe estar asignado cuando se llama a esta funcion
+  /** @brief Comprobacion rapida de una asignacion individual (patient-first, spatial).
+   *  El paciente NO debe estar asignado cuando se llama a esta funcion.
+   */
   static bool IsFeasiblePatientAssignment(const Solution& solution,
                                           PatientId pid, RoomId room,
                                           Day admission_day,
                                           OperatingTheaterId ot);
 
-  // comprueba si una enfermera puede asignarse a (room, day, shift)
+  /** @brief Comprueba si una enfermera puede asignarse a (room, day, shift). */
   static bool IsFeasibleNurseAssignment(const Solution& solution,
                                         NurseId nurse_id, RoomId room_id,
                                         Day day, Shift shift);
 
  private:
+  /** @brief HC1: todos los pacientes obligatorios estan programados. */
   static void CheckMandatoryScheduled(const Solution& sol,
                                       const ProblemData& prob,
                                       FeasibilityResult& result);
+
+  /** @brief HC2/HC3: dia de cirugia dentro de la ventana de admision. */
   static void CheckAdmissionWindows(const Solution& sol,
                                     const ProblemData& prob,
                                     FeasibilityResult& result);
+
+  /** @brief HC4: la estancia cabe en el horizonte de planificacion. */
   static void CheckStayInHorizon(const Solution& sol, const ProblemData& prob,
                                  FeasibilityResult& result);
+
+  /** @brief HC5: ocupacion <= capacidad en cada (habitacion, dia). */
   static void CheckRoomCapacity(const Solution& sol, const ProblemData& prob,
                                 FeasibilityResult& result);
+
+  /** @brief HC6: sin mezcla de generos en ninguna (habitacion, dia). */
   static void CheckGenderMixing(const Solution& sol, const ProblemData& prob,
                                 FeasibilityResult& result);
+
+  /** @brief HC7: paciente no asignado a habitacion incompatible. */
   static void CheckRoomCompatibility(const Solution& sol,
                                      const ProblemData& prob,
                                      FeasibilityResult& result);
+
+  /** @brief HC8: quirofano abierto el dia de cirugia (availability > 0). */
   static void CheckOTOpen(const Solution& sol, const ProblemData& prob,
                           FeasibilityResult& result);
+
+  /** @brief HC10: enfermera disponible en el (dia, turno) asignado. */
   static void CheckNurseAvailability(const Solution& sol,
                                      const ProblemData& prob,
                                      FeasibilityResult& result);
+
+  /** @brief HC12: carga del cirujano <= max_surgery_time en cada dia. */
   static void CheckSurgeonOvertime(const Solution& sol, const ProblemData& prob,
                                    FeasibilityResult& result);
+
+  /** @brief HC13: carga del quirofano <= availability en cada dia. */
   static void CheckOTOvertime(const Solution& sol, const ProblemData& prob,
                               FeasibilityResult& result);
+
+  /** @brief HC14: toda (habitacion, dia, turno) con ocupantes tiene enfermera. */
   static void CheckRoomCoverage(const Solution& sol, const ProblemData& prob,
                                 FeasibilityResult& result);
 };

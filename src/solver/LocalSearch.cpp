@@ -19,13 +19,9 @@
 #include <vector>
 
 #include "../evaluator/FeasibilityChecker.h"
-#include "ALNSPerturbation.h"
 #include "CompoundMoves.h"
 #include "RandomGenerator.h"
 
-// ============================================================================
-// Config thread_local
-// ============================================================================
 // La VNS la invoca ACOSolver desde varios hilos en paralelo. Cada hilo
 // guarda su propia copia del VNSConfig para que los operadores estaticos
 // (que no reciben el config por parametro) puedan leerlo sin races.
@@ -33,10 +29,7 @@ namespace {
 thread_local VNSConfig g_vns_config{};
 }
 
-// ============================================================================
-// Estadisticas
-// ============================================================================
-
+/** @brief Formatea las estadisticas de busqueda local como texto legible. */
 std::string LocalSearchStats::ToString() const {
   std::ostringstream oss;
   oss << "=== Estadisticas de busqueda local ===\n";
@@ -62,15 +55,15 @@ std::string LocalSearchStats::ToString() const {
   return oss.str();
 }
 
-// ============================================================================
-// Busqueda local principal con ILS
-// ============================================================================
-
+/** @brief Busqueda local con ILS: optimo local + perturbacion y reinicio.
+ *  Itera 8 operadores atomicos (mas 3 compuestos si config.enable_compound)
+ *  en first-improvement hasta optimo local, luego perturba desde la mejor
+ *  solucion conocida (ILS clasico) hasta kMaxPerturbations.
+ */
 LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
                                   std::mt19937& rng,
                                   double time_limit_seconds,
                                   uint8_t enabled_mask,
-                                  bool use_alns,
                                   const VNSConfig& config) {
   // guardar config para este hilo: los operadores estaticos lo leen
   g_vns_config = config;
@@ -82,7 +75,7 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
   // Cobertura de enfermeras inicial: la solucion entrante puede tener celdas
   // (room, day) sin enfermera tras una construccion ACO o un Perturb previo.
   // Sin esto, el coste evaluado por LS oculta el coste de las celdas
-  // descubiertas y produce decisiones engañosas.
+  // descubiertas y produce decisiones enganosas.
   RandomGenerator::EnsureFullNurseCoverage(solution, prob, rng);
 
   int current_cost = Evaluator::Evaluate(solution);
@@ -120,9 +113,8 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
   std::vector<int> order(active.size());
   std::iota(order.begin(), order.end(), 0);
 
-  // Si use_alns: hasta 30 iteraciones de destroy/repair (cada una mas
-  // informativa que un Perturb ciego). Si ILS clasico: 15 (v2).
-  const int kMaxPerturbations = use_alns ? 30 : 15;
+  // ILS clasico: hasta 15 perturbaciones (v2).
+  const int kMaxPerturbations = 15;
 
   // A3: kPerturbStrength proporcional al tamano (legacy fijo 4).
   // strength = clamp(factor * num_scheduled, base, max).
@@ -137,12 +129,6 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
     return s;
   };
 
-  // Modulo ALNS opcional. Se instancia con el coste inicial para calibrar T_0.
-  std::unique_ptr<ALNSPerturbation> alns;
-  if (use_alns) {
-    alns = std::make_unique<ALNSPerturbation>(prob, current_cost);
-  }
-
   int perturbation_count = 0;
   int iter = 0;
 
@@ -154,7 +140,6 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
 
   while (iter < max_iterations && perturbation_count <= kMaxPerturbations &&
          time_remaining()) {
-    // === Fase LS: busqueda local hasta optimo local ===
     bool ls_improved = true;
     while (ls_improved && iter < max_iterations && time_remaining()) {
       ++iter;
@@ -209,28 +194,18 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
       best_cost = current_cost;
     }
 
-    // === Fase ILS: perturbar y reiniciar ===
     if (perturbation_count >= kMaxPerturbations || iter >= max_iterations) {
       break;
     }
 
     perturbation_count++;
-    if (use_alns) {
-      // Etapa 3 — perturbacion ALNS sobre la mejor solucion conocida.
-      // Si Apply rechaza, la solucion queda igual; si acepta, current_cost
-      // se actualiza dentro y la solucion puede haber empeorado (lo permite SA).
-      solution = best_solution;
-      current_cost = best_cost;
-      alns->Apply(solution, current_cost, rng);
-      // Apply ya llama a EnsureFullNurseCoverage en su interior.
-    } else {
-      solution = best_solution;
-      current_cost = best_cost;
-      Perturb(solution, compute_strength(), rng);
-      // Perturb mueve pacientes y puede dejar celdas sin enfermera
-      RandomGenerator::EnsureFullNurseCoverage(solution, prob, rng);
-      current_cost = Evaluator::Evaluate(solution);
-    }
+    // Fase ILS: perturbar desde la mejor solucion conocida.
+    solution = best_solution;
+    current_cost = best_cost;
+    Perturb(solution, compute_strength(), rng);
+    // Perturb mueve pacientes y puede dejar celdas sin enfermera
+    RandomGenerator::EnsureFullNurseCoverage(solution, prob, rng);
+    current_cost = Evaluator::Evaluate(solution);
   }
 
   // restaurar la mejor solucion (ya tiene cobertura completa por construccion)
@@ -245,10 +220,9 @@ LocalSearchStats LocalSearch::Run(Solution& solution, int max_iterations,
   return stats;
 }
 
-// ============================================================================
-// Helper
-// ============================================================================
-
+/** @brief Devuelve los pacientes programados barajados, con cap opcional.
+ *  El cap (A1) lo fija config.max_patients_per_op; 0 = sin cap.
+ */
 std::vector<PatientId> LocalSearch::GetShuffledScheduled(
     const Solution& solution, std::mt19937& rng) {
   const auto& scheduled = solution.GetScheduledPatients();
@@ -267,10 +241,7 @@ std::vector<PatientId> LocalSearch::GetShuffledScheduled(
   return patients;
 }
 
-// ============================================================================
-// Vecindario 1: Cambiar habitacion (EXHAUSTIVO)
-// ============================================================================
-
+/** @brief Vecindario 1: cambia la habitacion de un paciente (exhaustivo). */
 bool LocalSearch::TryChangeRoom(Solution& solution, int& current_cost,
                                 std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -313,10 +284,10 @@ bool LocalSearch::TryChangeRoom(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// Vecindario 2: Cambiar dia - VENTANA COMPLETA (EXHAUSTIVO)
-// ============================================================================
-
+/** @brief Vecindario 2: cambia el dia de admision (exhaustivo, ventana completa).
+ *  Recorre desde el release day hasta el ultimo dia posible (o due day si es
+ *  mandatorio).
+ */
 bool LocalSearch::TryChangeDay(Solution& solution, int& current_cost,
                                std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -370,10 +341,7 @@ bool LocalSearch::TryChangeDay(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// Vecindario 3: Cambiar quirofano (EXHAUSTIVO)
-// ============================================================================
-
+/** @brief Vecindario 3: cambia el quirofano de un paciente (exhaustivo). */
 bool LocalSearch::TryChangeOT(Solution& solution, int& current_cost,
                                std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -414,10 +382,7 @@ bool LocalSearch::TryChangeOT(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// Vecindario 4: Intercambiar habitaciones (EXHAUSTIVO sobre pares)
-// ============================================================================
-
+/** @brief Vecindario 4: intercambia habitaciones entre dos pacientes (sobre pares). */
 bool LocalSearch::TrySwapRooms(Solution& solution, int& current_cost,
                                 std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -484,10 +449,7 @@ bool LocalSearch::TrySwapRooms(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// Vecindario 5: Intercambiar dias (EXHAUSTIVO sobre pares)
-// ============================================================================
-
+/** @brief Vecindario 5: intercambia dias de admision entre dos pacientes (sobre pares). */
 bool LocalSearch::TrySwapDays(Solution& solution, int& current_cost,
                                std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -559,10 +521,7 @@ bool LocalSearch::TrySwapDays(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// Vecindario 6: Programar/desprogramar paciente opcional (EXHAUSTIVO)
-// ============================================================================
-
+/** @brief Vecindario 6: programa o desprograma un paciente opcional (exhaustivo). */
 bool LocalSearch::TryToggleOptional(Solution& solution, int& current_cost,
                                      std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -663,10 +622,7 @@ bool LocalSearch::TryToggleOptional(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// Vecindario 7: Cambiar enfermera (EXHAUSTIVO sobre posiciones)
-// ============================================================================
-
+/** @brief Vecindario 7: reasigna enfermera por celda (room, day, shift) ocupada. */
 bool LocalSearch::TryChangeNurse(Solution& solution, int& current_cost,
                                   std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -732,10 +688,9 @@ bool LocalSearch::TryChangeNurse(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// Vecindario 8: Reubicacion compuesta (day + room + ot simultaneo) 2 O 3 CAMBIOS
-// ============================================================================
-
+/** @brief Vecindario 8: reubicacion compuesta de day+room+ot (2 o 3 cambios a la vez).
+ *  Salta combinaciones de un solo cambio (ya cubiertas por vecindarios 1-3).
+ */
 bool LocalSearch::TryRelocate(Solution& solution, int& current_cost,
                                std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();
@@ -829,10 +784,7 @@ bool LocalSearch::TryRelocate(Solution& solution, int& current_cost,
   return false;
 }
 
-// ============================================================================
-// Perturbacion ILS: reubica K pacientes a posiciones factibles aleatorias
-// ============================================================================
-
+/** @brief Perturbacion ILS: reubica strength pacientes a posiciones factibles aleatorias. */
 void LocalSearch::Perturb(Solution& solution, int strength,
                           std::mt19937& rng) {
   const ProblemData& prob = solution.GetProblem();

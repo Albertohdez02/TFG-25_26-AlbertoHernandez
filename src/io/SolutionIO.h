@@ -22,9 +22,12 @@
 
 using json = nlohmann::json;
 
+/** @brief Exportacion de soluciones a JSON compatible con el evaluador IHTC. */
 class SolutionIO {
  public:
-  // exporta la solucion a un fichero JSON
+  /** @brief Exporta la solucion a un fichero JSON.
+   *  @return true si se pudo escribir el fichero.
+   */
   static bool ExportJSON(const Solution& solution,
                          const std::string& filepath) {
     json j = ToJSON(solution);
@@ -39,7 +42,7 @@ class SolutionIO {
     return true;
   }
 
-  // convierte la solucion a JSON
+  /** @brief Convierte la solucion al objeto JSON con secciones patients y nurses. */
   static json ToJSON(const Solution& solution) {
     const ProblemData& prob = solution.GetProblem();
     json j;
@@ -72,8 +75,7 @@ class SolutionIO {
     int num_shifts = prob.GetNumShiftTypes();
     const auto& shift_names = prob.GetShiftNames();
 
-    // recopilar: nurse_id -> (day, shift) -> lista de rooms
-    // usamos map para ordenar de forma determinista
+    // nurse_id -> (day, shift) -> rooms; map para orden determinista
     std::map<NurseId, std::map<std::pair<Day,Shift>, std::vector<RoomId>>> nurse_map;
 
     for (RoomId r = 0; r < prob.GetNumRooms(); ++r) {
@@ -117,7 +119,7 @@ class SolutionIO {
     return j;
   }
 
-  // imprime un resumen de la solucion por consola
+  /** @brief Imprime por consola un resumen de la solucion y la tabla de asignaciones. */
   static void PrintSummary(const Solution& solution) {
     const ProblemData& prob = solution.GetProblem();
 

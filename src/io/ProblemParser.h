@@ -17,9 +17,13 @@
 
 using json = nlohmann::json;
 
+/** @brief Parser de ficheros JSON de instancias IHTC a ProblemData. */
 class ProblemParser {
  public:
-  // parsea un fichero JSON y devuelve el ProblemData relleno
+  /** @brief Parsea un fichero JSON de instancia y devuelve el ProblemData relleno.
+   *  Las habitaciones se parsean primero porque sus IDs son necesarios para
+   *  mapear ocupantes y pacientes.
+   */
   static ProblemData Parse(const std::string& filepath) {
     std::ifstream file(filepath);
     if (!file.is_open()) {
@@ -38,7 +42,6 @@ class ProblemParser {
     problem.SetNumDays(j.at("days").get<int>());
     problem.SetNumSkillLevels(j.at("skill_levels").get<int>());
 
-    // parsear tipos de turno
     std::vector<std::string> shift_names;
     std::unordered_map<std::string, Shift> shift_map;
     for (size_t i = 0; i < j.at("shift_types").size(); ++i) {
@@ -49,7 +52,6 @@ class ProblemParser {
     problem.SetNumShiftTypes(static_cast<int>(shift_names.size()));
     problem.SetShiftNames(shift_names);
 
-    // parsear grupos de edad
     std::unordered_map<std::string, AgeGroup> age_map;
     for (size_t i = 0; i < j.at("age_groups").size(); ++i) {
       age_map[j.at("age_groups")[i].get<std::string>()] =
@@ -57,7 +59,7 @@ class ProblemParser {
     }
     problem.SetNumAgeGroups(static_cast<int>(age_map.size()));
 
-    // parsear habitaciones primero (necesarias para mapear IDs)
+    // Habitaciones primero: sus IDs son necesarios para mapear ocupantes y pacientes.
     std::unordered_map<std::string, RoomId> room_map;
     int room_idx = 0;
     for (const auto& r : j.at("rooms")) {
@@ -67,7 +69,6 @@ class ProblemParser {
       ++room_idx;
     }
 
-    // parsear cirujanos
     std::unordered_map<std::string, SurgeonId> surgeon_map;
     int surgeon_idx = 0;
     for (const auto& s : j.at("surgeons")) {
@@ -79,7 +80,6 @@ class ProblemParser {
       ++surgeon_idx;
     }
 
-    // parsear quirofanos
     int ot_idx = 0;
     for (const auto& ot : j.at("operating_theaters")) {
       std::string id = ot.at("id").get<std::string>();
@@ -89,7 +89,6 @@ class ProblemParser {
       ++ot_idx;
     }
 
-    // parsear enfermeras
     int nurse_idx = 0;
     for (const auto& n : j.at("nurses")) {
       std::string id = n.at("id").get<std::string>();
@@ -104,7 +103,6 @@ class ProblemParser {
       ++nurse_idx;
     }
 
-    // parsear ocupantes
     int occ_idx = 0;
     for (const auto& occ : j.at("occupants")) {
       problem.AddOccupant(Occupant(
@@ -118,10 +116,10 @@ class ProblemParser {
       ++occ_idx;
     }
 
-    // parsear pacientes
     int pat_idx = 0;
     for (const auto& p : j.at("patients")) {
       bool mandatory = p.at("mandatory").get<bool>();
+      // Los opcionales no traen surgery_due_day: se usa el ultimo dia como limite.
       Day due_day = mandatory ? p.at("surgery_due_day").get<int>()
                               : (problem.GetNumDays() - 1);
 
@@ -144,7 +142,6 @@ class ProblemParser {
       ++pat_idx;
     }
 
-    // parsear pesos 
     const auto& w = j.at("weights");
     Weights weights;
     weights.room_mixed_age = w.at("room_mixed_age").get<int>();
@@ -162,7 +159,7 @@ class ProblemParser {
   }
 
  private:
-  // transforma un string de genero (A/B) a la constante correspondiente
+  /** @brief Transforma un string de genero (A/B) a su constante de Gender. */
   static Gender ParseGender(const std::string& g) {
     if (g == "A") return kGenderFemale;
     if (g == "B") return kGenderMale;

@@ -31,7 +31,7 @@
 #include "../solution/Solution.h"
 #include "LocalSearch.h"  // VNSConfig
 
-// Parametros del algoritmo ACO
+/** @brief Parametros del algoritmo ACO. */
 struct ACOParams {
   int    n_ants       = 12;   // hormigas por iteracion (mas hormigas, VNS mas corta)
   double alpha        = 1.0;  // exponente de la feromona en la regla de seleccion
@@ -41,7 +41,6 @@ struct ACOParams {
   double tau_init     = 1.0;  // feromona inicial para posiciones feasibles
   int    stagnation_k = 15;   // iteraciones sin mejora global antes de reinicializar
   int    pool_size    = 4;    // hilos paralelos por iteracion (regla IHTC: max 4)
-  bool   use_alns     = false;// si true, usa ALNS+SA en lugar del ILS clasico
 
   // B1: si true, eta_room incluye penalizaciones por capacidad y compatibilidad
   // de genero/edad. Si false, eta_room sigue siendo binaria {0,1} (legacy).
@@ -74,7 +73,7 @@ struct ACOParams {
   // valles locales (sintoma observado en i19, i23).
   //
   // Benchmark 30 inst mostro impacto NEUTRAL en agregado (+0.06% vs Polish):
-  // ayuda en i26/i16/i11/i15/i12/i19 pero daña en i20/i27/i22/i21/i14/i08/i10.
+  // ayuda en i26/i16/i11/i15/i12/i19 pero dana en i20/i27/i22/i21/i14/i08/i10.
   // Default DESACTIVADO; activar manualmente para experimentar con
   // instancias problematicas.
   //
@@ -104,56 +103,51 @@ struct ACOParams {
   bool   seed_dampen = false;
   double seed_dampen_factor = 3.0;  // 3 * tau_min
 
-  // Some-touches Fase 3: modo hibrido ACO-rapido + ALNS+SA dedicado.
-  // El bucle ACO se reduce a aco_quick_budget_s (3-5 hormigas para una
-  // buena solucion inicial). El tiempo restante (excepto polish) se
-  // dedica a un bucle ALNS+SA puro sobre best_solution, con VNS corta
-  // de refinamiento entre Apply()s.
-  bool   hybrid_mode = false;
-  double aco_quick_budget_s = 90.0;  // tiempo para bucle ACO inicial
-  double alns_vns_time_s = 3.0;       // VNS entre Apply()s en el ALNS loop
-
   // Configuracion de la VNS (caps, exhaustive, refresh nurses, etc.).
-  // Default = agresivo (Bloque A activo). Para legacy, pasar el resultado
-  // de MakeLegacyVNSConfig() en main.cpp.
+  // Default = agresivo (Bloque A+B+C activos).
   VNSConfig vns_config = {};
 };
 
+/** @brief Solver ACO (MMAS) hibrido con VNS para IHTC 2024. */
 class ACOSolver {
  public:
-  // ejecuta el bucle ACO+VNS durante time_limit_s segundos
-  // devuelve la mejor solucion factible encontrada
+  /** @brief Ejecuta el bucle ACO+VNS durante time_limit_s segundos.
+   *  @return La mejor solucion factible encontrada.
+   */
   static Solution Run(const ProblemData& problem, std::mt19937& rng,
                       int max_ls_iter, double time_limit_s,
                       const ACOParams& params = {});
 
  private:
-  // tipo alias: vector 1D aplanado que representa una matriz [pid * stride + idx]
+  // vector 1D aplanado que representa una matriz [pid * stride + idx]
   using PheromoneMatrix = std::vector<double>;
 
-  // inicializa feromonas: tau_init en posiciones feasibles, 0.0 en infeasibles
+  /** @brief Inicializa feromonas: tau_init en posiciones feasibles, 0.0 en infeasibles. */
   static void InitPheromones(PheromoneMatrix& tau_day,
                               PheromoneMatrix& tau_room,
                               const ProblemData& problem, double tau_init);
 
-  // C1: inicializa tau_nurse[shift][nurse] a tau_init en todas las (s,n)
-  // donde la enfermera trabaja en al menos un dia con ese shift.
+  /** @brief Inicializa tau_nurse[shift][nurse] a tau_init (C1).
+   *  Solo en las (s,n) donde la enfermera trabaja en al menos un dia con ese shift.
+   */
   static void InitPheromonesNurse(PheromoneMatrix& tau_nurse,
                                    const ProblemData& problem, double tau_init);
 
-  // precomputa eta_day y eta_room (invariante durante toda la ejecucion)
-  // B1/B2: si rich_eta_room/day estan activos, incluye penalizaciones
-  // adicionales para diferenciar habitaciones/dias por mas factores que
-  // la mera compatibilidad y el delay.
+  /** @brief Precomputa eta_day y eta_room, invariante durante toda la ejecucion.
+   *  B1/B2: si rich_eta_room/day estan activos, incluye penalizaciones
+   *  adicionales para diferenciar habitaciones/dias por mas factores que
+   *  la mera compatibilidad y el delay.
+   */
   static void PrecomputeHeuristics(std::vector<double>& eta_day,
                                    std::vector<double>& eta_room,
                                    const ProblemData& problem,
                                    bool rich_eta_room = true,
                                    bool rich_eta_day  = true);
 
-  // construye una solucion siguiendo feromonas y heuristica.
-  // Si params.use_tau_nurse, las enfermeras se asignan via ACO usando
-  // tau_nurse + heuristica eta_nurse dinamica.
+  /** @brief Construye una solucion siguiendo feromonas y heuristica.
+   *  Si params.use_tau_nurse, las enfermeras se asignan via ACO usando
+   *  tau_nurse + heuristica eta_nurse dinamica.
+   */
   static Solution ConstructSolution(const PheromoneMatrix& tau_day,
                                     const PheromoneMatrix& tau_room,
                                     const PheromoneMatrix& tau_nurse,
@@ -163,17 +157,18 @@ class ACOSolver {
                                     const ACOParams& params,
                                     std::mt19937& rng);
 
-  // C1: asigna enfermeras a (room, day, shift) con pacientes/ocupantes
-  // usando tau_nurse[shift][nurse] + eta_nurse(n, room, day, shift) ACS.
-  // eta_nurse incorpora skill_penalty, workload, continuity (igual que la
-  // greedy pero invertida y normalizada).
+  /** @brief Asigna enfermeras a (room, day, shift) via ACO (C1).
+   *  Usa tau_nurse[shift][nurse] + eta_nurse(n, room, day, shift) con ACS.
+   *  eta_nurse incorpora skill_penalty, workload, continuity (igual que la
+   *  greedy pero invertida y normalizada).
+   */
   static void GenerateNurseAssignmentsACO(Solution& solution,
                                           const PheromoneMatrix& tau_nurse,
                                           const ProblemData& problem,
                                           const ACOParams& params,
                                           std::mt19937& rng);
 
-  // actualiza feromonas MMAS: evaporacion global + deposito de la mejor solucion
+  /** @brief Actualiza feromonas MMAS: evaporacion global + deposito de la mejor solucion. */
   static void UpdatePheromones(PheromoneMatrix& tau_day,
                                 PheromoneMatrix& tau_room,
                                 PheromoneMatrix& tau_nurse,
@@ -181,15 +176,16 @@ class ACOSolver {
                                 const ProblemData& problem,
                                 const ACOParams& params);
 
-  // reinicializa todas las feromonas a tau_init (recuperacion ante estancamiento)
+  /** @brief Reinicializa todas las feromonas a tau_init ante estancamiento. */
   static void ResetPheromones(PheromoneMatrix& tau_day,
                                PheromoneMatrix& tau_room,
                                PheromoneMatrix& tau_nurse,
                                const ProblemData& problem, double tau_init);
 
-  // siembra feromona elevada en las decisiones de una solucion semilla
-  // (warm-start). Para los arcs del seed coloca tau_max; el resto de
-  // posiciones feasibles se ponen a tau_min para crear el contraste MMAS.
+  /** @brief Siembra feromona elevada en las decisiones de una solucion semilla (warm-start).
+   *  Para los arcs del seed coloca tau_max; el resto de posiciones feasibles
+   *  se ponen a tau_min para crear el contraste MMAS.
+   */
   static void SeedPheromones(PheromoneMatrix& tau_day,
                               PheromoneMatrix& tau_room,
                               PheromoneMatrix& tau_nurse,
@@ -197,10 +193,11 @@ class ACOSolver {
                               const ProblemData& problem,
                               const ACOParams& params);
 
-  // seleccion pseudoproporcional ACS sobre un vector de scores
-  // con prob q0 devuelve el argmax (explotacion)
-  // con prob 1-q0 muestrea por ruleta (exploracion)
-  // devuelve -1 si no hay candidatos validos (todos los scores son 0)
+  /** @brief Seleccion pseudoproporcional ACS sobre un vector de scores.
+   *  Con prob q0 devuelve el argmax (explotacion); con prob 1-q0 muestrea
+   *  por ruleta (exploracion).
+   *  @return Indice elegido, o -1 si no hay candidatos validos (todos los scores son 0).
+   */
   [[nodiscard]] static int SelectByScore(const std::vector<double>& scores,
                                          double q0, std::mt19937& rng);
 };
