@@ -9,8 +9,6 @@ El enfoque principal es una **colonia de hormigas (ACO/MMAS)** cuya construcció
 **búsqueda de vecindario variable (VNS)** empleada como búsqueda local iterada (ILS). Se incluye
 además un **constructor aleatorio multi-start** que sirve de línea base.
 
-> **Trabajo de Fin de Grado — Alberto Hernández. Grado en Ingeniería Informática.**
-
 ---
 
 ## Índice
