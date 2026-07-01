@@ -1,4 +1,4 @@
-# IHTC 2024 — Solver ACO/VNS para planificación hospitalaria integrada
+# TFG-25-26  IHTC 2024 — Solver ACO/VNS para planificación hospitalaria integrada
 
 Metaheurística para el **Integrated Healthcare Timetabling Competition 2024 (IHTC 2024)**. El solver
 asigna a cada paciente un día de admisión, una habitación y un quirófano, y reparte las enfermeras
